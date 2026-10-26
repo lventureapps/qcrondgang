@@ -2,7 +2,7 @@
 // worker (Background Sync). Gebruikt daarom geen DOM.
 import * as db from './db.js';
 import { roep } from './api.js';
-import { bouwVerzoek, bouwDagVerzoek, FOTOSOORTEN } from './model.js';
+import { bouwVerzoek, bouwDagVerzoek, FOTOSOORTEN, dagFotos } from './model.js';
 
 const WACHT_S = [5, 15, 60, 120]; // oplopende wachttijd, daarna elke 2 minuten
 
@@ -112,6 +112,13 @@ export async function herstelWachtrij() {
   }
   for (const dc of await db.alle('dagcontroles')) {
     if (dc.status === 'klaar' && !items.has(`dag:${dc.id}`)) await dagInWachtrij(dc.id);
+    // Foto's van een afgesloten Magazijn en bufferzone die nog niet verzonden zijn.
+    if (dc.status !== 'klaar' && dc.status !== 'verzonden') continue;
+    for (const ref of dagFotos(dc)) {
+      if (!ref.fotoId || items.has(`foto:${ref.fotoId}`)) continue;
+      const foto = await db.haal('fotos', ref.fotoId);
+      if (foto && foto.status !== 'verzonden') await fotoInWachtrij(foto.id, dc.id);
+    }
   }
 }
 
@@ -125,6 +132,7 @@ async function blobNaarBase64(blob) {
 /** Geeft 'weg' (item mag uit de wachtrij), 'wacht' (later opnieuw) of 'verzonden'. Gooit bij een fout. */
 async function verstuurFoto(item) {
   const foto = await db.haal('fotos', item.fotoId);
+  if (foto && foto.soort === 'magazijn') return verstuurDagFoto(foto);
   const controle = foto && (await db.haal('controles', foto.appId));
   const beneden = controle && controle.delen.beneden;
   const ref = beneden && beneden.fotos && beneden.fotos[foto.soort];
@@ -139,6 +147,25 @@ async function verstuurFoto(item) {
     // De lijn zoals ze bij het afsluiten van Beneden vastgelegd is: de bestandsnaam blijft bij elke herhaling dezelfde.
     datum: controle.datum, code: controle.code, lijn: foto.lijn || '',
     // Het tijdstip van de foto: het script laat een nieuwere foto nooit vervangen door een oudere.
+    genomenOm: new Date(foto.genomenOm).toISOString(),
+    data: await blobNaarBase64(foto.blob)
+  }, { timeout: 120000 });
+  if (antwoord.fotoId !== foto.id) throw Object.assign(new Error('De bevestiging hoort niet bij deze foto.'), { netwerk: true });
+  await db.werkBij('fotos', foto.id, (f) => { f.status = 'verzonden'; f.verzondenOm = Date.now(); });
+  return 'verzonden';
+}
+
+/** Een foto van Magazijn en bufferzone: pas nadat de dagcontrole zelf in de sheet staat. */
+async function verstuurDagFoto(foto) {
+  const dc = await db.haal('dagcontroles', foto.appId);
+  const fotos = dagFotos(dc);
+  if (!dc || !fotos.some((f) => f.fotoId === foto.id) || foto.status === 'verzonden') return 'weg';
+  if (dc.status !== 'verzonden') return 'wacht';
+  const antwoord = await roep('foto', {
+    soort: 'magazijn', datum: dc.datum, fotoId: foto.id,
+    // Alle foto's van de dag: het script zet "volgt" zolang er nog een onderweg is.
+    fotos: fotos.map((f) => f.fotoId),
+    fotosWeg: Array.isArray(dc.fotosWeg) ? dc.fotosWeg : [],
     genomenOm: new Date(foto.genomenOm).toISOString(),
     data: await blobNaarBase64(foto.blob)
   }, { timeout: 120000 });
@@ -202,6 +229,8 @@ async function verwerkNu(handmatig) {
       try {
         const uit = item.soort === 'foto' ? await verstuurFoto(item) : await verstuurDag(item);
         if (uit === 'weg' || uit === 'verzonden') await db.wis('wachtrij', item.id);
+        // De foto's van deze dagcontrole hoeven nu niet langer te wachten.
+        if (item.soort === 'dag' && uit === 'verzonden') await laatFotosLos(items, item.dagId);
         if (uit === 'wacht') {
           item.nietVoor = Date.now() + 30000;
           await db.werkBij('wachtrij', item.id, (x) => { x.nietVoor = item.nietVoor; });
@@ -248,17 +277,20 @@ async function verwerkNu(handmatig) {
       });
       if (verzonden) await db.wis('wachtrij', item.id);
       // De foto's van deze controle hoeven nu niet langer te wachten.
-      if (verzonden && item.deel === 'beneden') {
-        for (const f of items) {
-          if (f.soort !== 'foto' || f.appId !== item.appId || !f.nietVoor) continue;
-          f.nietVoor = 0;
-          await db.werkBij('wachtrij', f.id, (x) => { x.nietVoor = 0; });
-        }
-      }
+      if (verzonden && item.deel === 'beneden') await laatFotosLos(items, item.appId);
       meld('wachtrij');
     } catch (e) {
       if (await itemMislukt(item, e)) break;
     }
+  }
+}
+
+/** Foto's die wachtten tot hun controle of dagcontrole in de sheet stond, mogen nu meteen. */
+async function laatFotosLos(items, appId) {
+  for (const f of items) {
+    if (f.soort !== 'foto' || f.appId !== appId || !f.nietVoor) continue;
+    f.nietVoor = 0;
+    await db.werkBij('wachtrij', f.id, (x) => { x.nietVoor = 0; });
   }
 }
 
@@ -274,7 +306,7 @@ async function itemMislukt(item, e) {
   if (e.code === 'LATER') {
     item.later = (item.later || 0) + 1;
     item.pogingen = Math.min(item.pogingen, 2);
-    item.laatsteFout = item.later >= 5 ? 'De rij van de controle staat niet in de sheet (verwijderd, of het app-ID is gewist). De foto blijft wachten tot de rij er weer staat.' : null;
+    item.laatsteFout = item.later >= 5 ? 'De rij waar deze foto bij hoort, staat niet in de sheet (verwijderd, het app-ID gewist, of de datum gewijzigd). De foto blijft wachten tot de rij er weer staat.' : null;
   }
   // Alleen bijwerken als het item er nog is: is het intussen uit de wachtrij
   // gehaald (controle verwijderd, foto opnieuw genomen), dan komt het niet terug.

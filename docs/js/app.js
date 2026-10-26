@@ -1307,27 +1307,38 @@ function fotoPunt(c, soort, foto, open, bewerkbaar) {
 /* Dagcontroles: Werkmaterialen boven en Magazijn en bufferzone        */
 /* ------------------------------------------------------------------ */
 
-/** datum: de dag van de dagcontrole op het scherm, niet "vandaag" op het moment van bewaren. */
+/**
+ * Stond het scherm al open voor middernacht maar was er nog niets ingevuld,
+ * dan is dit de controle van vandaag: geeft die dag terug en zet het adres van
+ * het scherm recht. Geeft { datum, verschoven }.
+ */
+async function dagVanScherm(soort, datum) {
+  if (datum === M.vandaag() || (await db.haal('dagcontroles', M.dagId(soort, datum)))) return { datum, verschoven: false };
+  const r = route();
+  if (r[0] === 'dag') history.replaceState(null, '', `#/dag/${soort}/${M.vandaag()}/${Number(r[3]) || 0}`);
+  return { datum: M.vandaag(), verschoven: true };
+}
+
+/** datum: de dag van de dagcontrole op het scherm, niet "vandaag" op het moment van bewaren. Geeft of fn toegepast is. */
 async function bewaarDag(soort, datum, fn, { teken = true } = {}) {
   bevestigWeg = null; // een antwoord geven is geen bevestiging van "verwijderen"
+  let toegepast = false;
   try {
-    // Stond het scherm al open voor middernacht maar was er nog niets ingevuld,
-    // dan is dit de controle van vandaag.
-    if (datum !== M.vandaag() && !(await db.haal('dagcontroles', M.dagId(soort, datum)))) {
-      datum = M.vandaag();
-      const r = route();
-      if (r[0] === 'dag') { history.replaceState(null, '', `#/dag/${soort}/${datum}/${Number(r[3]) || 0}`); teken = true; }
-    }
+    const d = await dagVanScherm(soort, datum);
+    datum = d.datum;
+    if (d.verschoven) teken = true;
     await db.werkBijOfMaak('dagcontroles', M.dagId(soort, datum), () => M.nieuweDag(soort, datum), (dc) => {
       if (!isOpenDeel(dc)) return false;
       fn(dc);
       dc.status = 'bezig';
+      toegepast = true;
     });
   } catch (e) {
     zetMelding('fout', `Bewaren op de tablet mislukte: ${e && e.message ? e.message : e}. Dit antwoord is NIET bewaard.`);
     teken = true;
   }
   if (teken) await toon({ behoudScroll: true });
+  return toegepast;
 }
 
 function dagTitel(soort, p) {
@@ -1370,7 +1381,10 @@ function dagWeg(dc) {
     if (!zeker) { bevestigWeg = dc.id; return toon({ behoudScroll: true }); }
     bevestigWeg = null;
     const weg = await db.wisAls('dagcontroles', dc.id, (x) => isOpenDeel(x));
-    if (weg) zetMelding('ok', `${M.DAGNAAM[dc.soort]} van ${datumLang(dc.datum)} is van de tablet verwijderd.`, 1);
+    if (weg) {
+      for (const ref of M.dagFotos(dc)) { await sync.fotoUitWachtrij(ref.fotoId); await db.wis('fotos', ref.fotoId); }
+      zetMelding('ok', `${M.DAGNAAM[dc.soort]} van ${datumLang(dc.datum)} is van de tablet verwijderd.`, 1);
+    }
     ga('#/');
   }
   return [
@@ -1431,6 +1445,11 @@ async function schermDag(soort, datum, gi) {
       x.afgeslotenOm = new Date().toISOString();
     });
     await sync.dagInWachtrij(vers.id);
+    // De foto's volgen na de dagcontrole zelf (de wachtrij laat ze wachten tot de rij in de sheet staat).
+    for (const ref of M.dagFotos(vers)) {
+      const foto = await db.haal('fotos', ref.fotoId);
+      if (foto && foto.status !== 'verzonden') await sync.fotoInWachtrij(foto.id, vers.id);
+    }
     sync.verwerk();
     zetMelding('ok', `${M.DAGNAAM[soort]}${eerder ? ` van ${datumLang(datum)}` : ''} is afgesloten.`, 1);
     ga('#/');
@@ -1464,6 +1483,7 @@ async function schermDag(soort, datum, gi) {
         h('h3', { class: 'groep-titel' }, 'Inspecties: tik aan wat niet OK was')
       ] : null,
       g.punten.map((p, i) => dagTegel(soort, dc, p, `dag-${gi}-${i}`, open.includes(p.kop), gebruik))),
+    laatste ? await dagFotoBlok(soort, dc, true) : null,
     h('div', { class: 'slot dag-slot' },
       open.length ? h('div', { class: 'melding fout', id: 'open-melding' }, [
         metingenOpen ? `${metingenOpen === 1 ? 'Eén meting ontbreekt of is' : `${metingenOpen} metingen ontbreken of zijn`} geen getal (rood omrand).` : '',
@@ -1474,7 +1494,7 @@ async function schermDag(soort, datum, gi) {
   ];
 }
 
-function dagSamenvatting(dc, groepen) {
+async function dagSamenvatting(dc, groepen) {
   // Op de dag zelf, en ook later zolang de dagcontrole nog niet verzonden is
   // (bijvoorbeeld als het script ze weigert omdat een kolom hernoemd is).
   const magCorrigeren = dc.datum === M.vandaag() || dc.status === 'klaar';
@@ -1487,6 +1507,7 @@ function dagSamenvatting(dc, groepen) {
     h('h2', {}, `${M.DAGNAAM[dc.soort]}: ${STATUSTEKST[dc.status]}`),
     h('p', { class: 'stap' }, `${datumLang(dc.datum)} · afgesloten om ${dagEnUur(dc.afgeslotenOm)}${dc.rij ? `, rij ${dc.rij} in de sheet` : ''}`),
     h('div', { class: 'kaart' }, h('table', { class: 'samenvatting' }, h('tbody', {}, rijen.map(([naam, waarde]) => h('tr', {}, h('td', {}, naam), h('td', {}, String(waarde))))))),
+    await dagFotoBlok(dc.soort, dc, false),
     h('div', { class: 'knoppen' },
       h('button', { class: 'knop hoofd', onclick: () => ga('#/') }, 'Terug naar start'),
       magCorrigeren ? h('button', { class: 'knop', id: 'corrigeren', onclick: async () => {
@@ -1496,6 +1517,82 @@ function dagSamenvatting(dc, groepen) {
       } }, 'Corrigeren') : null),
     !magCorrigeren ? h('p', { class: 'klein zacht' }, 'Corrigeren in de app kan alleen op de dag van de controle. Latere correcties gebeuren in de sheet.') : null
   ];
+}
+
+/* Foto's bij Magazijn en bufferzone: niet verplicht, hoogstens zoveel als het script toelaat. */
+
+/** Bewaart een foto bij de dagcontrole: eerst de foto zelf, dan de verwijzing. */
+async function bewaarDagFoto(soort, datum, blob, max) {
+  // Een leeg scherm van voor middernacht is de controle van vandaag (zoals bij bewaarDag).
+  datum = (await dagVanScherm(soort, datum)).datum;
+  const id = M.nieuwId();
+  await db.zet('fotos', { id, appId: M.dagId(soort, datum), soort: 'magazijn', blob, genomenOm: Date.now(), status: 'klaar', verzondenOm: null });
+  let vol = false;
+  const gezet = await bewaarDag(soort, datum, (x) => {
+    x.fotos = M.dagFotos(x);
+    if (x.fotos.length >= max) { vol = true; return; }
+    x.fotos.push({ fotoId: id });
+  }, { teken: false });
+  if (!gezet || vol) {
+    await db.wis('fotos', id);
+    zetMelding('fout', vol ? `De foto is NIET bewaard: er zijn al ${max} foto's.` : 'De foto is NIET bewaard: deze dagcontrole is al afgesloten.');
+  }
+}
+
+async function dagFotoNemen(soort, datum, max) {
+  try {
+    const blob = await neemFoto(`Foto · ${M.DAGNAAM[soort]}`);
+    if (!blob) return;
+    await bewaarDagFoto(soort, datum, blob, max);
+  } catch (e) {
+    zetMelding('fout', `De foto is NIET bewaard: ${e && e.message ? e.message : e}`);
+  }
+  await toon({ behoudScroll: true });
+}
+
+/** Haalt een foto weg. Stond ze al in de sheet, dan haalt het script de link daar weg bij het opnieuw afsluiten. */
+async function dagFotoWis(soort, datum, fotoId) {
+  const foto = await db.haal('fotos', fotoId);
+  let verwijderd = false;
+  await bewaarDag(soort, datum, (x) => {
+    const voor = M.dagFotos(x).length;
+    x.fotos = M.dagFotos(x).filter((f) => f.fotoId !== fotoId);
+    verwijderd = x.fotos.length < voor;
+    if (verwijderd && foto && foto.status === 'verzonden') x.fotosWeg = [...(Array.isArray(x.fotosWeg) ? x.fotosWeg : []), fotoId];
+  }, { teken: false });
+  if (verwijderd) { await sync.fotoUitWachtrij(fotoId); await db.wis('fotos', fotoId); }
+  await toon({ behoudScroll: true });
+}
+
+/** De foto's van een dagcontrole als blok: miniaturen, en bij een open controle de knoppen. */
+async function dagFotoBlok(soort, dc, bewerkbaar) {
+  const max = M.dagFotosMax(soort, snapshot);
+  const refs = M.dagFotos(dc);
+  if (!max && !refs.length) {
+    // Geen foto's mogelijk: alleen bij Magazijn even zeggen waarom, en alleen op het invulscherm.
+    return soort === 'magazijn' && bewerkbaar && snapshot
+      ? h('p', { class: 'klein zacht', id: 'dag-fotos-uitleg' }, 'Foto\'s bij deze controle: daarvoor moet script 2.5.0 online staan met de kolom "Foto\'s" (installeer), gevolgd door "Verversen" op deze tablet.')
+      : null;
+  }
+  const fotos = [];
+  for (const ref of refs) fotos.push([ref.fotoId, await db.haal('fotos', ref.fotoId)]);
+  return h('section', { class: 'dag-fotos kaart', id: 'dag-fotos', 'data-aantal': String(refs.length) },
+    h('h3', { class: 'groep-titel' }, bewerkbaar ? `Foto's (niet verplicht, hoogstens ${max})` : "Foto's"),
+    fotos.length ? h('div', { class: 'dag-foto-rij' }, fotos.map(([fotoId, foto], i) => {
+      const titel = `Foto ${i + 1}`;
+      const $el = h('figure', { class: 'dag-foto', 'data-foto-id': fotoId });
+      if (foto && foto.blob) {
+        const u = URL.createObjectURL(foto.blob);
+        objectUrls.push(u);
+        $el.append(h('img', { class: 'foto-klein', src: u, alt: titel, title: 'Tik om de foto groot te bekijken', onclick: () => toonFotoGroot(foto.blob, titel) }));
+        $el.append(h('figcaption', {}, `${titel} · ${dagEnUur(foto.genomenOm)} · ${foto.status === 'verzonden' ? 'verzonden' : 'nog niet verzonden'}`));
+      } else {
+        $el.append(h('figcaption', {}, `${titel} · verzonden (niet meer op de tablet)`));
+      }
+      if (bewerkbaar) $el.append(h('button', { class: 'keuze', 'data-actie': 'foto-wis', onclick: () => dagFotoWis(soort, dc.datum, fotoId) }, 'Wissen'));
+      return $el;
+    })) : h('p', { class: 'klein zacht' }, bewerkbaar ? 'Bijvoorbeeld van iets dat niet OK was.' : 'Geen foto\'s.'),
+    bewerkbaar && refs.length < max ? h('div', { class: 'knoppen' }, h('button', { class: 'knop', id: 'dag-foto-nemen', onclick: () => dagFotoNemen(soort, dc.datum, max) }, 'Foto nemen')) : null);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1601,14 +1698,14 @@ async function opruimen() {
     const veilig = M.DELEN.every((d) => c.delen[d].status === 'verzonden' || c.delen[d].status === 'open') && !nogTeVerzenden.has(c.appId);
     if (veilig && c.aangemaaktOm < grens) await db.wis('controles', c.appId);
   }
-  // Foto's: weg als ze verzonden en oud zijn, of als hun controle niet meer bestaat.
-  const bestaand = new Set((await db.alle('controles')).map((c) => c.appId));
+  for (const dc of await db.alle('dagcontroles')) {
+    if ((dc.status === 'verzonden' || dc.status === 'open') && !nogTeVerzenden.has(dc.id) && dc.aangemaaktOm < grens) await db.wis('dagcontroles', dc.id);
+  }
+  // Foto's: weg als ze verzonden en oud zijn, of als hun controle of dagcontrole niet meer bestaat.
+  const bestaand = new Set([...(await db.alle('controles')).map((c) => c.appId), ...(await db.alle('dagcontroles')).map((dc) => dc.id)]);
   for (const f of await db.alle('fotos')) {
     const oud = f.status === 'verzonden' && (f.verzondenOm || f.genomenOm) < grens;
     if (oud || !bestaand.has(f.appId)) { await db.wis('fotos', f.id); await db.wis('wachtrij', `foto:${f.id}`); }
-  }
-  for (const dc of await db.alle('dagcontroles')) {
-    if ((dc.status === 'verzonden' || dc.status === 'open') && dc.aangemaaktOm < grens) await db.wis('dagcontroles', dc.id);
   }
 }
 

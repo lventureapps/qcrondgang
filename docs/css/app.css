@@ -293,6 +293,16 @@ textarea.invoer { min-height: 96px; resize: vertical; }
 .dag-binnen .keuze { flex: none; min-height: 48px; padding: 4px 10px; font-size: .88rem; border-radius: 9px; }
 .dag-tegel.open { border: 3px solid var(--nok); }
 .dag-slot { max-width: 520px; margin: 8px auto 0; }
+/* Foto's bij Magazijn en bufferzone */
+.dag-fotos { margin: 10px 0 0; padding: 10px 12px; }
+.dag-fotos .groep-titel { margin: 0 0 6px; }
+.dag-foto-rij { display: flex; flex-wrap: wrap; gap: 12px; }
+.dag-foto { margin: 0; display: flex; flex-direction: column; gap: 6px; width: 200px; max-width: 100%; }
+.dag-foto .foto-klein { margin: 0; height: 140px; width: 100%; object-fit: cover; cursor: zoom-in; }
+.dag-foto figcaption { font-size: 0.85em; color: var(--zacht, #555); }
+.dag-foto .keuze { flex: 0 0 auto; align-self: flex-start; min-height: 48px; padding: 6px 18px; }
+.dag-fotos .knoppen { margin-top: 10px; }
+.dag-fotos .knoppen .knop { flex: 0 1 260px; }
 
 /* ---------- Magazijn en bufferzone: de metingen staan bovenaan in hetzelfde raster als de tegels ---------- */
 .dag-raster .punt.regel { margin: 0 0 5px; }

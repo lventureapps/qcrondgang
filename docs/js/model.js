@@ -322,7 +322,24 @@ export const dagId = (soort, datum = vandaag()) => `${soort}:${datum}`;
 
 /** datum: de dag waarop de dagcontrole begonnen is. Ze blijft bij die dag horen, ook na middernacht. */
 export function nieuweDag(soort, datum = vandaag()) {
-  return { id: dagId(soort, datum), soort, datum, aangemaaktOm: Date.now(), status: 'open', antwoorden: {}, metingen: {}, versie: 0, afgeslotenOm: null, verzondenOm: null, rij: null };
+  // fotos: alleen bij Magazijn en bufferzone, in de volgorde van nemen: [{ fotoId }];
+  // fotosWeg: foto-ID's die na het verzenden gewist zijn (de sheet moet hun link nog weghalen).
+  return { id: dagId(soort, datum), soort, datum, aangemaaktOm: Date.now(), status: 'open', antwoorden: {}, metingen: {}, fotos: [], fotosWeg: [], versie: 0, afgeslotenOm: null, verzondenOm: null, rij: null };
+}
+
+/** De foto's van een dagcontrole (een record van voor 1.10.0 heeft het veld niet). */
+export const dagFotos = (dc) => (dc && Array.isArray(dc.fotos) ? dc.fotos : []);
+
+/**
+ * Hoeveel foto's de controleur bij "Magazijn en bufferzone" mag nemen: wat het
+ * script meldt (0 zolang de kolom "Foto's" in de sheet ontbreekt of het script
+ * ouder is dan 2.5.0). Voor de andere dagcontrole altijd 0.
+ */
+export function dagFotosMax(soort, snapshot) {
+  if (soort !== 'magazijn') return 0;
+  const d = snapshot && snapshot.dag && snapshot.dag.magazijn;
+  const n = d ? Number(d.fotos) : 0;
+  return Number.isInteger(n) && n > 0 ? n : 0;
 }
 
 /**
@@ -368,7 +385,15 @@ export function bouwDagVerzoek(dc, snapshot) {
       punten.push(a.ok === true ? { kop: p.kop, ok: true } : { kop: p.kop, ok: false, tekst: String(a.tekst || '').trim() });
     });
   });
-  return { soort: dc.soort, datum: dc.datum, afgeslotenOm: dc.afgeslotenOm, metingen, punten };
+  const verzoek = { soort: dc.soort, datum: dc.datum, afgeslotenOm: dc.afgeslotenOm, metingen, punten };
+  // De foto-ID's van de dag: het script zet "volgt" tot ze binnen zijn en haalt
+  // de link van een gewiste foto weg.
+  if (dc.soort === 'magazijn') {
+    verzoek.fotos = dagFotos(dc).map((f) => f.fotoId);
+    // Foto's die na het verzenden gewist zijn: het script haalt hun link weg.
+    verzoek.fotosWeg = Array.isArray(dc.fotosWeg) ? dc.fotosWeg : [];
+  }
+  return verzoek;
 }
 
 /* ------------------------------------------------------------------ */
