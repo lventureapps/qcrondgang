@@ -10,7 +10,15 @@ const CRIT = { CHECKBOX: 'CHECKBOX', VALUE_IN_LIST: 'VALUE_IN_LIST', VALUE_IN_RA
 // vrij = "ongeldige gegevens: waarschuwing tonen" in plaats van "invoer weigeren"
 const regel = (type, args, vrij = false) => ({
   getCriteriaType: () => type, getCriteriaValues: () => args, getAllowInvalid: () => vrij,
-  copy: () => { let v = vrij; const bouwer = { setAllowInvalid(x) { v = !!x; return bouwer; }, build: () => regel(type, args, v) }; return bouwer; }
+  copy: () => {
+    let v = vrij; let t = type; let a = args;
+    const bouwer = {
+      setAllowInvalid(x) { v = !!x; return bouwer; },
+      requireValueInList(lijst, uitklap) { t = CRIT.VALUE_IN_LIST; a = [lijst.slice(), uitklap !== false]; return bouwer; },
+      build: () => regel(t, a, v)
+    };
+    return bouwer;
+  }
 });
 const lijstRegel = (waarden) => regel(CRIT.VALUE_IN_LIST, [waarden.slice(), true]);
 const vakjeRegel = () => regel(CRIT.CHECKBOX, []);
@@ -131,9 +139,18 @@ class NepBereik {
   setNumberFormat(fmt) { this._map((r, c) => { this.tab.cel(r, c, true).fmt = fmt; }); return this; }
   // Voorzichtige aanname over Google: in een cel met tekstopmaak ("@") blijft een formule gewone tekst.
   setFormula(f) { this._map((r, c) => { const x = this.tab.cel(r, c, true); x.link = ''; if (x.fmt === '@') { x.f = ''; x.v = f; } else { x.f = f; x.v = ''; } }); return this; }
-  setRichTextValue(rt) { this._map((r, c) => { const x = this.tab.cel(r, c, true); x.f = ''; x.v = rt.getText(); x.link = rt.getLinkUrl() || ''; }); return this; }
-  getRichTextValue() { const x = this.tab.cel(this.r, this.c) || {}; return { getText: () => String(x.v || ''), getLinkUrl: () => x.link || null }; }
-  clearContent() { this._map((r, c) => { const x = this.tab.cel(r, c); if (x) { x.v = ''; x.f = ''; x.link = ''; } }); return this; }
+  // Tekst met links: `link` is de link van de hele cel (één link), `links` zijn de stukken met elk hun link.
+  setRichTextValue(rt) { this._map((r, c) => { const x = this.tab.cel(r, c, true); x.f = ''; x.v = rt.getText(); x.links = rt.getRuns().filter((run) => run.getLinkUrl()).map((run) => ({ start: run.getStartIndex(), end: run.getEndIndex(), url: run.getLinkUrl() })); x.link = rt.getLinkUrl() || ''; }); return this; }
+  getRichTextValue() {
+    const x = this.tab.cel(this.r, this.c) || {};
+    if (x.f) return null;
+    const tekst = String(x.v == null ? '' : x.v);
+    // Tests zetten `link` rechtstreeks (zonder `links`): die geldt dan voor de hele cel.
+    let links = x.links || [];
+    if (x.link && links.length <= 1 && !(links.length === 1 && links[0].url === x.link)) links = [{ start: 0, end: tekst.length, url: x.link }];
+    return nepRichText(tekst, links);
+  }
+  clearContent() { this._map((r, c) => { const x = this.tab.cel(r, c); if (x) { x.v = ''; x.f = ''; x.link = ''; x.links = []; } }); return this; }
   getDataValidation() { return (this.tab.cel(this.r, this.c) || {}).dv || null; }
   setDataValidation(dv) { this._map((r, c) => { this.tab.cel(r, c, true).dv = dv; }); return this; }
   clearDataValidations() { this._map((r, c) => { const x = this.tab.cel(r, c); if (x) x.dv = null; }); return this; }
@@ -148,6 +165,7 @@ class NepBereik {
     }
     x.f = '';
     x.link = '';
+    x.links = [];
     if (typeof v === 'string') {
       // Zoals getypt: apostrof = tekst, = is formule, een getal wordt een getal.
       if (v.startsWith("'")) x.v = v.slice(1);
@@ -243,6 +261,21 @@ class NepMap {
     return b;
   }
 }
+/** Nagebootste RichTextValue: tekst met stukken die elk een link kunnen hebben. getLinkUrl() zonder argument: de ene link van de cel, of null als er meer dan één is (zoals bij Google). */
+function nepRichText(tekst, links) {
+  const stukken = links.slice().sort((a, b) => a.start - b.start);
+  const runs = [];
+  let pos = 0;
+  stukken.forEach((l) => {
+    if (l.start > pos) runs.push({ start: pos, end: l.start, url: null });
+    runs.push({ start: l.start, end: l.end, url: l.url });
+    pos = l.end;
+  });
+  if (pos < tekst.length || !runs.length) runs.push({ start: pos, end: tekst.length, url: null });
+  const run = (x) => ({ getText: () => tekst.slice(x.start, x.end), getLinkUrl: () => x.url, getStartIndex: () => x.start, getEndIndex: () => x.end });
+  const urls = [...new Set(stukken.map((l) => l.url))];
+  return { getText: () => tekst, getLinkUrl: () => (urls.length === 1 ? urls[0] : null), getRuns: () => runs.map(run) };
+}
 const iterator = (lijst) => { let i = 0; return { hasNext: () => i < lijst.length, next: () => lijst[i++] }; };
 function nepDrive(sheetId) {
   const drive = { teller: 0, perId: {}, bestandPerId: {} };
@@ -284,8 +317,13 @@ function laadScript({ actief, opId, eigenschappen = {}, sheetsDienst = false }) 
       flush: () => {},
       DataValidationCriteria: CRIT,
       newRichTextValue: () => {
-        const rt = { tekst: '', link: null };
-        const bouwer = { setText(t) { rt.tekst = t; return bouwer; }, setLinkUrl(u) { rt.link = u; return bouwer; }, build: () => ({ getText: () => rt.tekst, getLinkUrl: () => rt.link }) };
+        const rt = { tekst: '', links: [] };
+        const bouwer = {
+          setText(t) { rt.tekst = t; return bouwer; },
+          // setLinkUrl(url) voor de hele tekst, setLinkUrl(start, einde, url) voor een stuk; zoals bij Google.
+          setLinkUrl(a, b, c) { if (c === undefined) rt.links = [{ start: 0, end: rt.tekst.length, url: a }]; else rt.links.push({ start: a, end: b, url: c }); return bouwer; },
+          build: () => nepRichText(rt.tekst, rt.links)
+        };
         return bouwer;
       }
     },
@@ -306,9 +344,11 @@ function laadScript({ actief, opId, eigenschappen = {}, sheetsDienst = false }) 
         return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]));
       },
       formatDate: (d, tz, patroon) => {
-        if (patroon !== 'yyyy-MM-dd') throw new Error('Nep: patroon niet nagebootst');
         const p = (n) => String(n).padStart(2, '0');
-        return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+        if (patroon === 'yyyy-MM-dd') return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+        if (patroon === 'dd-MM-yyyy') return p(d.getDate()) + '-' + p(d.getMonth() + 1) + '-' + d.getFullYear();
+        if (patroon === 'dd-MM-yyyy HH:mm') return p(d.getDate()) + '-' + p(d.getMonth() + 1) + '-' + d.getFullYear() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+        throw new Error('Nep: patroon niet nagebootst');
       },
       base64Decode: (tekst) => Array.from(Buffer.from(tekst, 'base64')),
       newBlob: (bytes, type, naam) => ({ bytes, type, naam })

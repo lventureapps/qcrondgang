@@ -151,22 +151,6 @@ async function nietOk(page, kop, tekst) {
   if (tekst) await page.fill(`${sel} textarea`, tekst);
 }
 const aangetikt = (page) => page.$$eval('section.dag-tegel[data-niet-ok="true"]', (els) => els.map((e) => [e.dataset.punt, e.querySelector('textarea').value]));
-/** Vult alle punten op het huidige scherm van een dagcontrole met OK, behalve de opgegeven afwijkingen. */
-async function vulDagScherm(page, afwijkingen = {}) {
-  const koppen = await page.$$eval('section[data-punt]', (els) => els.map((e) => e.dataset.punt));
-  for (const kop of koppen) {
-    const sel = `section[data-punt="${kop}"]`;
-    if (afwijkingen[kop] === undefined) {
-      await page.click(`${sel} button[data-waarde="ok"]`);
-      await page.waitForSelector(`${sel} button[data-waarde="ok"].gekozen`);
-    } else {
-      await page.click(`${sel} button[data-waarde="anders"]`);
-      await page.waitForSelector(`${sel} textarea`);
-      if (afwijkingen[kop]) await page.fill(`${sel} textarea`, afwijkingen[kop]);
-    }
-  }
-  return koppen;
-}
 /** Vult alle punten van Beneden in (één scherm), zonder af te sluiten. fotos: false laat de foto's open. */
 async function vulBenedenPunten(page, { checkweger = 'NEE', md = 'NEE', snelheid = '52', operator = 'AB', etiket = 'nvt', fotos = true } = {}) {
   await kies(page, 'lotZkCorrect', 'true');
@@ -1353,7 +1337,7 @@ async function scenario(naam, fn) {
       await tot(() => acties('foto') >= i + 1, `poging ${i} met "later"`);
       await page.waitForFunction(() => !document.querySelector('#nu-sync') || !document.querySelector('#nu-sync').disabled);
     }
-    await wachtOpTekst(page, /^1 foto wacht · Fout: De rij van de controle staat niet in de sheet/);
+    await wachtOpTekst(page, /^1 foto wacht · Fout: De rij waar deze foto bij hoort, staat niet in de sheet/);
     assert.strictEqual(srv.staat.script.drive.alleBestanden().length, 0);
     // het app-ID staat er weer: de foto volgt
     appIdCel.v = appId;
@@ -1544,6 +1528,103 @@ async function scenario(naam, fn) {
     assert.strictEqual(await operatorenTekst(page), 'AB');
   });
 
+  await scenario('operatoren beheren: een naam die bij Beneden getypt wordt, komt in de keuzelijst van de sheet; het scherm Operatoren toont, voegt toe en verwijdert (tweede tik), ook zonder verbinding; met een oud script alleen nakijken', async (ctx) => {
+    const page = await pagina(ctx);
+    await stelIn(page);
+    const dvLijst = (r, l) => srv.staat.fx.tab.cel(r, letterNaarKolom(l)).dv.getCriteriaValues()[0];
+    const namen = () => page.$$eval('#operatoren-tabel tr', (rs) => rs.map((r) => [r.dataset.naam, r.dataset.stand]));
+    // zonder verbinding: getypte naam bij Beneden
+    await ctx.setOffline(true);
+    await begin(page, '260102', 'beneden');
+    await kiesOperatoren(page, ['CD'], ['xy']);
+    assert.strictEqual(await operatorenTekst(page), 'CD, xy');
+    await wachtOpTekst(page, /^1 wijziging aan de operatoren wacht · geen verbinding$/);
+    // het beheerscherm, via Instellingen
+    await page.goto(srv.appUrl + '#/instellingen');
+    await page.click('#naar-operatoren');
+    await page.waitForSelector('#operatoren-tabel');
+    assert.deepStrictEqual(await namen(), [...OPERATOREN.map((n) => [n, 'sheet']), ['xy', 'nieuw']]);
+    // toevoegen, dubbel (ongeacht hoofdletters) niet, en een komma wordt een spatie
+    await page.fill('#operator-beheer-nieuw', 'ab');
+    await page.click('#operator-beheer-toevoegen');
+    await page.waitForSelector('#melding');
+    assert.match(await page.textContent('#melding'), /staat al in de lijst/);
+    await page.fill('#operator-beheer-nieuw', ' Z,Q ');
+    await page.press('#operator-beheer-nieuw', 'Enter');
+    await page.waitForSelector('#operatoren-tabel tr[data-naam="Z Q"][data-stand="nieuw"]');
+    // verwijderen vraagt een tweede tik; "Nee" zet terug
+    await page.click('tr[data-naam="EF"] button[data-actie="verwijderen"]');
+    await page.waitForSelector('tr[data-naam="EF"] button[data-actie="nee"]');
+    assert.strictEqual(await page.textContent('tr[data-naam="EF"] button[data-actie="verwijderen"]'), 'Ja, verwijderen');
+    await page.click('tr[data-naam="EF"] button[data-actie="nee"]');
+    await page.waitForSelector('tr[data-naam="EF"] button[data-actie="nee"]', { state: 'detached' });
+    await page.click('tr[data-naam="EF"] button[data-actie="verwijderen"]');
+    await page.waitForSelector('tr[data-naam="EF"] button[data-actie="nee"]');
+    await page.click('tr[data-naam="EF"] button[data-actie="verwijderen"]');
+    await page.waitForSelector('tr[data-naam="EF"][data-stand="weg"]');
+    // een nieuwe naam die nog wacht, verwijderen = de wens vervalt; "Toch houden" haalt een verwijdering terug
+    await page.click('tr[data-naam="Z Q"] button[data-actie="verwijderen"]');
+    await page.waitForSelector('tr[data-naam="Z Q"]', { state: 'detached' });
+    await page.click('tr[data-naam="GH"] button[data-actie="verwijderen"]');
+    await page.click('tr[data-naam="GH"] button[data-actie="verwijderen"]');
+    await page.waitForSelector('tr[data-naam="GH"][data-stand="weg"]');
+    await page.click('tr[data-naam="GH"] button[data-actie="toch-houden"]');
+    await page.waitForSelector('tr[data-naam="GH"][data-stand="sheet"]');
+    await wachtOpTekst(page, /^2 wijzigingen aan de operatoren wachten · geen verbinding$/);
+    // in het keuzescherm van Beneden: xy erbij, EF weg
+    await page.goto(srv.appUrl + '#/controles');
+    await page.click('.rij[data-code="260102"]');
+    await page.click('#open-beneden');
+    await page.waitForSelector('#operatoren-kies');
+    await page.click('#operatoren-kies');
+    await page.waitForSelector('#operatoren-kiezer');
+    assert.deepStrictEqual(await page.$$eval('#operatoren-lijst button', (bs) => bs.map((b) => b.dataset.naam)), [...OPERATOREN.filter((n) => n !== 'EF'), 'xy']);
+    await page.click('#operatoren-klaar');
+    await page.waitForSelector('#operatoren-kiezer', { state: 'detached' });
+    // verbinding: de sheet krijgt de nieuwe lijst in beide kolommen, alle rijen; de app kent ze zonder verversen
+    await ctx.setOffline(false);
+    await allesVerzonden(page, 30000);
+    const verwacht = [...OPERATOREN.filter((n) => n !== 'EF'), 'xy'];
+    for (const r of [3, 5, srv.staat.fx.tab.getMaxRows()]) for (const l of ['Q', 'R']) assert.deepStrictEqual(dvLijst(r, l), verwacht, `rij ${r} kolom ${l}`);
+    await page.goto(srv.appUrl + '#/operatoren');
+    await page.waitForSelector('#operatoren-tabel');
+    assert.deepStrictEqual(await namen(), verwacht.map((n) => [n, 'sheet']));
+    // "Klaar" met een naam nog in het veld: ze telt voor deze controle, maar komt niet in de lijst van de sheet
+    await page.goto(srv.appUrl + '#/controles');
+    await page.click('.rij[data-code="260102"]');
+    await page.click('#open-beneden');
+    await page.click('#operatoren-kies');
+    await page.waitForSelector('#operatoren-kiezer');
+    await page.fill('#operator-nieuw', 'qq');
+    await page.click('#operatoren-klaar');
+    await page.waitForSelector('#operatoren-kiezer', { state: 'detached' });
+    assert.strictEqual(await operatorenTekst(page), 'CD, xy, qq');
+    assert.strictEqual(await opslag(page, async (db, vraag) => (await vraag(db.transaction('wachtrij').objectStore('wachtrij').getAll())).filter((i) => i.soort === 'operatoren').length), 0, 'geen wijziging aan de lijst');
+    // een wijziging die het script blijvend weigert (de lijst komt intussen uit een bereik): het item gaat weg, het scherm zegt waarom
+    const bereik = { getCriteriaType: () => 'VALUE_IN_RANGE', getCriteriaValues: () => [{ getDisplayValues: () => [['AB']] }], getAllowInvalid: () => false, copy: () => { throw new Error('niet verwacht'); } };
+    for (let r = 3; r <= srv.staat.fx.tab.getMaxRows(); r++) srv.staat.fx.tab.cel(r, letterNaarKolom('Q')).dv = bereik;
+    await page.goto(srv.appUrl + '#/operatoren');
+    await page.fill('#operator-beheer-nieuw', 'RS');
+    await page.press('#operator-beheer-nieuw', 'Enter');
+    await page.waitForSelector('#operatoren-fout');
+    assert.match(await page.textContent('#operatoren-fout'), /"RS" toevoegen is door het script geweigerd \(De keuzelijst van "Operator" komt uit een bereik/);
+    await allesVerzonden(page, 20000);
+    assert.strictEqual(await bestaat(page, 'tr[data-naam="RS"]'), false);
+    await page.click('#operatoren-fout-weg');
+    await page.waitForSelector('#operatoren-fout', { state: 'detached' });
+    // met een oud script: alleen nakijken
+    await opslag(page, async (db, vraag) => {
+      const os = db.transaction('referentie', 'readwrite').objectStore('referentie');
+      const sn = await vraag(os.get('snapshot'));
+      sn.scriptVersie = '2.5.0';
+      await vraag(os.put(sn, 'snapshot'));
+    });
+    await page.reload();
+    await page.waitForSelector('#operatoren-uitleg');
+    assert.strictEqual(await bestaat(page, '#operator-beheer-toevoegen'), false);
+    assert.strictEqual(await page.$$eval('#operatoren-tabel button', (bs) => bs.length), 0);
+  });
+
   await scenario('controle die met de vorige versie begonnen is (twee aparte operatoren): de antwoorden blijven en gaan juist naar de sheet', async (ctx) => {
     const page = await pagina(ctx);
     await stelIn(page);
@@ -1667,40 +1748,52 @@ async function scenario(naam, fn) {
     assert.strictEqual(acties('dagcontrole'), 2);
   });
 
-  await scenario('magazijn en bufferzone: metingen en alle punten op één scherm, OK of NOK met opmerking, eerste vrije rij, opnieuw verzenden geeft geen dubbel', async (ctx) => {
+  await scenario('magazijn en bufferzone: de metingen altijd invullen, de punten negatief (alleen aantikken wat niet OK was, de rest wordt OK); eerste vrije rij, opnieuw verzenden geeft geen dubbel', async (ctx) => {
     const page = await pagina(ctx);
     await stelIn(page);
     const mw = (r, l) => srv.staat.fx.mag.waarde(r, letterNaarKolom(l));
     const actief = MAGAZIJN_PUNTEN.filter((p) => p.actief).map((p) => p.kop);
+    const punt = (kop) => `section.dag-tegel[data-punt="${kop}"]`;
     await page.click('#tegel-magazijn');
     await page.waitForSelector('#verder');
-    // alles op één scherm: de drie metingen en elk punt met selectievakjes; niets vooraf ingevuld
+    // alles op één scherm: de drie metingen en elk punt met selectievakjes als tegel; niets aangetikt
     assert.deepStrictEqual(await page.$$eval('#dag section[data-meting] h3', (els) => els.map((e) => e.textContent)), ['Temperatuur magazijn (in C°)', 'Temperatuur Koelkast eetzaal', 'Luchtvochtigheid magazijn (in %)20,7']);
-    assert.deepStrictEqual(await page.$$eval('#dag section[data-punt]', (els) => els.map((e) => e.dataset.punt)), actief, 'het punt zonder selectievakjes wordt niet gevraagd');
-    assert.strictEqual(await bestaat(page, '#dag .gekozen'), false);
-    assert.strictEqual(await bestaat(page, '#vorige'), false);
+    assert.deepStrictEqual(await page.$$eval('#dag section.dag-tegel', (els) => els.map((e) => e.dataset.punt)), actief, 'het punt zonder selectievakjes wordt niet gevraagd');
+    assert.deepStrictEqual(await aangetikt(page), []);
+    assert.deepStrictEqual(await page.$$eval('#dag section[data-meting] input', (els) => els.map((e) => e.value)), ['', '', ''], 'de metingen zijn niet vooraf ingevuld');
+    assert.match(await page.textContent('.dag-kop'), /welke punten waren niet OK\?.*Vul de metingen in\. Tik aan wat niet OK was/s);
+    assert.strictEqual(await page.textContent('#verder'), `Afsluiten: alle ${actief.length} punten OK`);
     const hash = await page.evaluate(() => location.hash);
+    // zonder metingen sluit de controle niet af; de punten zelf zijn niet "open"
     await page.click('#verder');
     await page.waitForSelector('#open-melding');
-    assert.strictEqual(await page.$$eval('.punt.open', (e) => e.length), 3 + actief.length);
+    assert.deepStrictEqual(await page.$$eval('.punt.open', (els) => els.map((e) => e.dataset.meting)), ['Temperatuur magazijn (in C°)', 'Temperatuur Koelkast eetzaal', 'Luchtvochtigheid magazijn (in %)20,7']);
+    assert.strictEqual(await page.$$eval('.dag-tegel.open', (e) => e.length), 0);
+    assert.match(await page.textContent('#open-melding'), /3 metingen ontbreken of zijn geen getal/);
     await page.fill('[data-invoer="meting-0"]', '21,5');
     await page.fill('[data-invoer="meting-1"]', '3');
     await page.fill('[data-invoer="meting-2"]', 'warm');
-    // NOK zonder opmerking blijft open; de andere punten OK
-    await vulDagScherm(page, { [MAGAZIJN_PUNTEN[1].kop]: '' });
+    // één punt niet OK, nog zonder opmerking; de andere blijven onaangeroerd
+    await nietOk(page, MAGAZIJN_PUNTEN[1].kop, '');
+    assert.strictEqual(await page.textContent('#verder'), `Afsluiten: ${actief.length - 1} OK, 1 niet OK`);
     // Een merkteken op de knop: zo is zeker dat het scherm na de tik opnieuw getekend is.
     await page.evaluate(() => { document.querySelector('#verder').dataset.oud = '1'; });
     await page.click('#verder');
-    await page.waitForFunction(() => !document.querySelector('#verder').dataset.oud && document.querySelectorAll('.punt.open').length === 2); // de foute meting en de NOK zonder opmerking
-    assert.deepStrictEqual(await page.$$eval('.punt.open', (els) => els.map((e) => e.dataset.meting || e.dataset.punt)), ['Luchtvochtigheid magazijn (in %)20,7', MAGAZIJN_PUNTEN[1].kop]);
+    await page.waitForFunction(() => !document.querySelector('#verder').dataset.oud && document.querySelectorAll('.punt.open').length === 1 && document.querySelectorAll('.dag-tegel.open').length === 1);
+    assert.deepStrictEqual(await page.$$eval('.punt.open, .dag-tegel.open', (els) => els.map((e) => e.dataset.meting || e.dataset.punt)), ['Luchtvochtigheid magazijn (in %)20,7', MAGAZIJN_PUNTEN[1].kop]);
+    assert.match(await page.textContent('#open-melding'), /Eén meting ontbreekt of is geen getal.*Bij 1 punt ontbreekt de opmerking/);
     assert.strictEqual(await page.evaluate(() => location.hash), hash, 'nog op hetzelfde scherm');
     assert.strictEqual(acties('dagcontrole'), 0);
     await page.fill('[data-invoer="meting-2"]', '48');
-    await page.fill(`section[data-punt="${MAGAZIJN_PUNTEN[1].kop}"] textarea`, 'heftruck lekt olie');
+    await page.fill(`${punt(MAGAZIJN_PUNTEN[1].kop)} textarea`, 'heftruck lekt olie');
+    // per vergissing aangetikt: "Toch OK" zet het punt terug
+    await nietOk(page, actief[actief.length - 1], 'vergissing');
+    await page.click(`${punt(actief[actief.length - 1])} button[data-waarde="toch-ok"]`);
+    await page.waitForSelector(`${punt(actief[actief.length - 1])}[data-niet-ok="false"]`);
     await page.reload(); // alles was al bewaard
     await page.waitForSelector('#verder');
     assert.strictEqual(await page.inputValue('[data-invoer="meting-0"]'), '21,5');
-    assert.strictEqual(await page.inputValue(`section[data-punt="${MAGAZIJN_PUNTEN[1].kop}"] textarea`), 'heftruck lekt olie');
+    assert.deepStrictEqual(await aangetikt(page), [[MAGAZIJN_PUNTEN[1].kop, 'heftruck lekt olie']]);
     srv.staat.verliesActie = 'dagcontrole';
     srv.staat.verlies = 1;
     await verder(page);
@@ -1708,13 +1801,123 @@ async function scenario(naam, fn) {
     await allesVerzonden(page, 20000);
     assert.strictEqual(acties('dagcontrole'), 2);
     assert.deepStrictEqual([mw(6, 'B'), mw(6, 'C'), mw(6, 'D')], [21.5, 3, 48]);
-    assert.deepStrictEqual([mw(6, 'E'), mw(6, 'F'), mw(6, 'G')], [true, false, 'NVT']);
+    assert.deepStrictEqual([mw(6, 'E'), mw(6, 'F'), mw(6, 'G')], [true, false, 'NVT'], 'niet aangetikt = uitdrukkelijk OK in de sheet');
     assert.deepStrictEqual([mw(6, 'H'), mw(6, 'I'), mw(6, 'J')], [false, true, 'heftruck lekt olie']);
     assert.strictEqual(mw(7, 'B'), '', 'geen tweede rij');
     assert.strictEqual(mw(5, 'J'), 'heftruck vuil');
     await page.goto(srv.appUrl + '#/einde');
     await page.waitForSelector('#eind[data-groen="true"]');
     assert.match(await page.textContent('#dag-niet-gedaan'), /Werkmaterialen boven/);
+  });
+
+  await scenario('magazijn: tot drie foto\'s, niet verplicht; offline bewaard, na herladen nog aanwezig; wissen; na het afsluiten volgen ze de dagcontrole en staan de links samen in de kolom "Foto\'s"; corrigeren haalt een link weg', async (ctx) => {
+    const page = await pagina(ctx);
+    await stelIn(page);
+    const mag = srv.staat.fx.mag;
+    const mw = (r, l) => mag.waarde(r, letterNaarKolom(l));
+    const celU = () => { const x = mag.cel(6, 21) || {}; return { tekst: String(x.v || ''), links: (x.links || []).map((l) => String(x.v).slice(l.start, l.end)) }; };
+    const aantal = () => page.getAttribute('#dag-fotos', 'data-aantal');
+    const fotoNemen = async () => {
+      const voor = Number(await aantal());
+      await page.click('#dag-foto-nemen');
+      await page.waitForSelector('#camera-knip:not([disabled])');
+      await page.click('#camera-knip');
+      await page.waitForSelector('#camera', { state: 'detached' });
+      await page.waitForSelector(`#dag-fotos[data-aantal="${voor + 1}"]`);
+    };
+    await ctx.setOffline(true);
+    await page.click('#tegel-magazijn');
+    await page.waitForSelector('#verder');
+    // het blok staat er, leeg, met de knop
+    assert.match(await page.textContent('#dag-fotos'), /Foto's \(niet verplicht, hoogstens 3\)/);
+    assert.strictEqual(await aantal(), '0');
+    assert.strictEqual(await page.$$eval('#dag-fotos .dag-foto', (e) => e.length), 0);
+    // annuleren laat alles zoals het was
+    await page.click('#dag-foto-nemen');
+    await page.waitForSelector('#camera-knip:not([disabled])');
+    await page.click('#camera-annuleer');
+    await page.waitForSelector('#camera', { state: 'detached' });
+    assert.strictEqual(await aantal(), '0');
+    await fotoNemen();
+    await fotoNemen();
+    assert.strictEqual(await page.$$eval('#dag-fotos .dag-foto img.foto-klein', (e) => e.length), 2);
+    assert.match(await page.textContent('#dag-fotos .dag-foto:nth-child(2) figcaption'), /^Foto 2 · .* · nog niet verzonden$/);
+    // herladen: de foto's zijn er nog, bij de dagcontrole van vandaag
+    await page.reload();
+    await page.waitForSelector('#dag-fotos[data-aantal="2"] img.foto-klein');
+    const opgeslagen = await opslag(page, async (db, vraag) => (await vraag(db.transaction('fotos').objectStore('fotos').getAll())).map((f) => ({ appId: f.appId, soort: f.soort, type: f.blob.type, status: f.status })));
+    assert.strictEqual(opgeslagen.length, 2);
+    assert.ok(opgeslagen.every((f) => f.appId === 'magazijn:' + iso(dag(0)) && f.soort === 'magazijn' && f.type === 'image/jpeg' && f.status === 'klaar'), JSON.stringify(opgeslagen));
+    // de eerste wissen: één over, en de foto zelf is weg van de tablet
+    const eersteId = await page.getAttribute('#dag-fotos .dag-foto:nth-child(1)', 'data-foto-id');
+    await page.click('#dag-fotos .dag-foto:nth-child(1) button[data-actie="foto-wis"]');
+    await page.waitForSelector('#dag-fotos[data-aantal="1"]');
+    assert.notStrictEqual(await page.getAttribute('#dag-fotos .dag-foto:nth-child(1)', 'data-foto-id'), eersteId);
+    assert.strictEqual(await opslag(page, (db, vraag) => vraag(db.transaction('fotos').objectStore('fotos').count())), 1);
+    // tot drie: daarna geen knop meer
+    await fotoNemen();
+    await fotoNemen();
+    assert.strictEqual(await bestaat(page, '#dag-foto-nemen'), false, 'bij drie foto\'s is de knop weg');
+    // een tik op een foto toont ze groot
+    await page.click('#dag-fotos .dag-foto:nth-child(3) img');
+    await page.waitForSelector('#foto-groot img');
+    await page.click('#foto-groot');
+    await page.waitForSelector('#foto-groot', { state: 'detached' });
+    // afsluiten zonder verbinding: de dagcontrole en drie foto's wachten; de foto's gaan pas na de dagcontrole
+    await page.fill('[data-invoer="meting-0"]', '20');
+    await page.fill('[data-invoer="meting-1"]', '3');
+    await page.fill('[data-invoer="meting-2"]', '50');
+    await verder(page);
+    await page.waitForSelector('#tegel-magazijn[data-status="klaar"]');
+    await wachtOpTekst(page, /^1 dagcontrole en 3 foto's wachten · geen verbinding$/);
+    assert.strictEqual(acties('foto'), 0);
+    srv.staat.verliesActie = 'foto';
+    srv.staat.verlies = 1;
+    await ctx.setOffline(false);
+    await allesVerzonden(page, 30000);
+    assert.strictEqual(acties('dagcontrole'), 1);
+    assert.strictEqual(acties('foto'), 4, 'drie foto\'s, één herhaling');
+    const bestanden = () => srv.staat.script.drive.alleBestanden().filter((b) => !b.prullenbak);
+    assert.strictEqual(bestanden().length, 3, JSON.stringify(bestanden().map((b) => b.naam)));
+    assert.ok(bestanden().every((b) => new RegExp('^' + iso(dag(0)) + '_magazijn_[0-9a-f]{8}\\.jpg$').test(b.naam) && b.bytes > 1000), JSON.stringify(bestanden()));
+    assert.deepStrictEqual([mw(6, 'B'), mw(6, 'C'), mw(6, 'D')], [20, 3, 50]);
+    assert.deepStrictEqual(celU(), { tekst: 'Foto 1 · Foto 2 · Foto 3', links: ['Foto 1', 'Foto 2', 'Foto 3'] });
+    // de samenvatting toont de foto's als verzonden
+    await page.click('#tegel-magazijn');
+    await page.waitForSelector('#dag-fotos[data-aantal="3"]');
+    assert.match(await page.textContent('#dag-fotos .dag-foto:nth-child(1) figcaption'), /verzonden$/);
+    assert.strictEqual(await bestaat(page, '#dag-foto-nemen'), false);
+    // corrigeren: de tweede foto wissen en opnieuw afsluiten: de link gaat weg, het bestand naar de prullenbak
+    await page.click('#corrigeren');
+    await page.waitForSelector('#dag-fotos[data-aantal="3"] button[data-actie="foto-wis"]');
+    await page.click('#dag-fotos .dag-foto:nth-child(2) button[data-actie="foto-wis"]');
+    await page.waitForSelector('#dag-fotos[data-aantal="2"]');
+    await page.waitForSelector('#dag-foto-nemen');
+    // de gewiste foto staat als "weg na verzenden" bij de dagcontrole, de blob is van de tablet
+    const dcNa = await opslag(page, (db, vraag) => vraag(db.transaction('dagcontroles').objectStore('dagcontroles').get('magazijn:' + arg)), iso(dag(0)));
+    assert.deepStrictEqual([dcNa.fotos.length, dcNa.fotosWeg.length], [2, 1]);
+    assert.strictEqual(await opslag(page, (db, vraag) => vraag(db.transaction('fotos').objectStore('fotos').count())), 2);
+    await verder(page);
+    await allesVerzonden(page, 20000);
+    await tot(() => celU().tekst === 'Foto 1 · Foto 2', 'de cel is hernummerd');
+    assert.strictEqual(bestanden().length, 2);
+    assert.strictEqual(srv.staat.script.drive.alleBestanden().filter((b) => b.prullenbak).length, 1);
+    assert.strictEqual(acties('foto'), 4, 'de twee overblijvende foto\'s worden niet opnieuw verzonden');
+  });
+
+  await scenario('magazijn zonder de kolom "Foto\'s" in de sheet: geen fotoknop, wel de uitleg; na installeer en verversen wel', async (ctx) => {
+    const page = await pagina(ctx);
+    srv.staat.fx.mag.cel(2, 21).v = '';
+    await stelIn(page);
+    await page.click('#tegel-magazijn');
+    await page.waitForSelector('#verder');
+    assert.strictEqual(await bestaat(page, '#dag-fotos'), false);
+    assert.match(await page.textContent('#dag-fotos-uitleg'), /script 2\.5\.0 .* kolom "Foto's"/);
+    srv.staat.script.roep('installeer');
+    await page.click('#ververs');
+    await page.waitForSelector('#dag-fotos[data-aantal="0"]');
+    assert.strictEqual(await bestaat(page, '#dag-fotos-uitleg'), false);
+    await page.waitForSelector('#dag-foto-nemen');
   });
 
   await scenario('dagcontrole van een eerdere dag: blijft bij haar dag, staat op het startscherm, afsluiten schrijft de rij van die dag, of verwijderen', async (ctx) => {

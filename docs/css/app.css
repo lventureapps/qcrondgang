@@ -403,3 +403,8 @@ textarea.invoer { min-height: 96px; resize: vertical; }
 .vr span { color: var(--zacht); }
 .vr b { text-align: right; overflow-wrap: anywhere; }
 .vr.afwijking b { color: var(--nok); }
+/* Operatoren beheren */
+.operatoren td { vertical-align: middle; }
+.operatoren td.rechts { text-align: right; white-space: nowrap; width: 1%; }
+.operatoren td.rechts .keuze { flex: 0 0 auto; min-height: 48px; padding: 6px 16px; margin-left: 8px; }
+.operatoren small { font-weight: 400; }

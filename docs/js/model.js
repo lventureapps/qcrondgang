@@ -141,6 +141,35 @@ export function operatorKeuzes(snapshot) {
   return v && v.keuzes ? v.keuzes.map(String) : [];
 }
 
+export const OPERATOR_MAX_TEKENS = 40;
+
+/** Een naam zoals ze in de keuzelijst mag: zonder komma (die scheidt de namen in de sheet), of '' als er niets overblijft. */
+export function operatorNaam(tekst) {
+  return String(tekst == null ? '' : tekst).replace(/[,;]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, OPERATOR_MAX_TEKENS);
+}
+
+/** Kan het script de keuzelijst van "Operator" wijzigen (2.6.0 en later)? Zonder gegevens: nee. */
+export function operatorBeheerMogelijk(snapshot) {
+  const [groot, klein] = String(snapshot && snapshot.scriptVersie || '').split('.').map(Number);
+  return groot > 2 || (groot === 2 && klein >= 6);
+}
+
+/**
+ * De operatoren zoals de controleur ze kiest: de keuzelijst van de sheet (bij
+ * het laatste ophalen), plus de namen die op deze tablet toegevoegd zijn en nog
+ * wachten op verzending, min de namen die wachten op verwijdering.
+ * items: de items van de wachtrij.
+ */
+export function operatorenActueel(snapshot, items) {
+  const lijst = operatorKeuzes(snapshot);
+  const zelfde = (a, b) => a.toLowerCase() === b.toLowerCase();
+  const weg = (items || []).filter((i) => i.soort === 'operatoren' && i.wat === 'verwijderen').map((i) => i.naam);
+  const bij = (items || []).filter((i) => i.soort === 'operatoren' && i.wat === 'toevoegen').map((i) => i.naam);
+  const uit = lijst.filter((n) => !weg.some((w) => zelfde(w, n)));
+  bij.forEach((n) => { if (!uit.some((x) => zelfde(x, n))) uit.push(n); });
+  return uit;
+}
+
 /**
  * De gekozen operatoren, in de volgorde waarin ze aangetikt zijn. Kent ook de
  * vorm van voor versie 1.2 (twee aparte antwoorden), voor controles die toen

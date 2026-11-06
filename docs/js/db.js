@@ -102,7 +102,8 @@ export async function werkBij(store, sleutel, fn) {
     uit = req.result;
     if (uit === undefined) return;
     if (fn(uit) === false) return;
-    os.put(uit);
+    // Een store zonder keyPath (instellingen, referentie) krijgt de sleutel apart mee.
+    if (os.keyPath === null) os.put(uit, sleutel); else os.put(uit);
   };
   return klaar(tx, () => uit);
 }

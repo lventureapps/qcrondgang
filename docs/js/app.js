@@ -135,6 +135,7 @@ async function werkBalkBij() {
       if (t.controles) delen.push(`${t.controles} ${t.controles === 1 ? 'controle' : 'controles'}`);
       if (t.dagen) delen.push(`${t.dagen} ${t.dagen === 1 ? 'dagcontrole' : 'dagcontroles'}`);
       if (t.fotos) delen.push(`${t.fotos} ${t.fotos === 1 ? 'foto' : "foto's"}`);
+      if (t.operatoren) delen.push(`${t.operatoren} ${t.operatoren === 1 ? 'wijziging' : 'wijzigingen'} aan de operatoren`);
       const samen = delen.length > 1 ? `${delen.slice(0, -1).join(', ')} en ${delen[delen.length - 1]}` : delen[0];
       tekst = `${samen} ${t.aantal === 1 && delen.length === 1 ? 'wacht' : 'wachten'}`;
       if (t.fout) { stip = 'stip fout'; tekst += ` · Fout: ${t.fout}`; }
@@ -166,6 +167,7 @@ function terug() {
   if (r[0] === 'c' && r.length >= 3) { if (r[3] === 'lijst') rbToon = r[1]; return ga(r[3] === 'lijst' ? '#/controles' : `#/c/${r[1]}`); }
   if (r[0] === 'c') { rbToon = r[1]; return ga('#/controles'); }
   if (r[0] === 'dag' && Number(r[3]) > 0) return ga(`#/dag/${r[1]}/${r[2]}/${Number(r[3]) - 1}`);
+  if (r[0] === 'operatoren') return ga('#/instellingen');
   return ga('#/');
 }
 
@@ -192,6 +194,7 @@ async function toon({ behoudScroll = false, achtergrond = false } = {}) {
     else if (r.length === 0) inhoud = await schermStart();
     else if (r[0] === 'controles' || r[0] === 'nieuw') inhoud = await schermControles();
     else if (r[0] === 'einde') inhoud = await schermEinde();
+    else if (r[0] === 'operatoren') inhoud = await schermOperatoren();
     else if (r[0] === 'c') inhoud = await schermControle(r[1], r[2], r[3]);
     else if (r[0] === 'dag' && M.DAGSOORTEN.includes(r[1])) inhoud = await schermDag(r[1], r[2], Number(r[3]) || 0);
     else inhoud = [h('p', {}, 'Onbekend scherm.')];
@@ -273,6 +276,10 @@ async function schermInstellingen() {
       h('label', { class: 'klein' }, h('input', { type: 'checkbox', onchange: (e) => { $sleutel.type = e.target.checked ? 'text' : 'password'; } }), ' Sleutel tonen'),
       h('div', { class: 'knoppen' }, h('button', { class: 'knop hoofd', id: 'inst-opslaan', onclick: opslaan }, 'Opslaan en testen')),
       $uit),
+    ingesteld ? h('div', { class: 'kaart' },
+      h('h3', { class: 'groep-titel' }, 'Operatoren'),
+      h('p', { class: 'klein' }, 'De initialen waaruit de controleur kiest bij Beneden: nakijken, toevoegen, verwijderen. De lijst is de keuzelijst van de kolom "Operator" in de sheet.'),
+      h('div', { class: 'knoppen' }, h('button', { class: 'knop', id: 'naar-operatoren', onclick: () => ga('#/operatoren') }, 'Operatoren beheren'))) : null,
     h('div', { class: 'kaart klein' },
       h('p', { id: 'inst-versie' }, `Versie van de app: ${APP_VERSIE}`),
       h('div', { class: 'knoppen' }, h('button', { class: 'knop', id: 'zoek-versie', onclick: async (e) => {
@@ -915,17 +922,22 @@ function antwoordVeld(c, deel, id, sleutel = id) {
  * wordt meteen bewaard.
  */
 async function kiesOperatoren(c) {
-  const lijst = M.operatorKeuzes(snapshot);
+  const beheer = M.operatorBeheerMogelijk(snapshot);
+  let lijst = M.operatorenActueel(snapshot, await db.alle('wachtrij'));
+  // Zonder script 2.6.0 komt een getypte naam niet in de sheet: dan staan de
+  // namen die de laatste dagen getypt zijn er opnieuw bij, zoals vroeger.
   const eerder = [];
-  for (const x of await db.alle('controles')) {
-    for (const n of M.operatorLijst(x.delen.beneden.antwoorden)) if (!lijst.includes(n) && !eerder.includes(n)) eerder.push(n);
+  if (!beheer) {
+    for (const x of await db.alle('controles')) {
+      for (const n of M.operatorLijst(x.delen.beneden.antwoorden)) if (!lijst.includes(n) && !eerder.includes(n)) eerder.push(n);
+    }
   }
   const vers = await db.haal('controles', c.appId);
   if (!vers) return;
   let gekozen = M.operatorLijst(vers.delen.beneden.antwoorden).slice();
   const $lijst = h('div', { class: 'kiezer-lijst', id: 'operatoren-lijst' });
   const $gekozen = h('p', { class: 'kiezer-gekozen', id: 'operatoren-gekozen' });
-  const $naam = h('input', { class: 'invoer', id: 'operator-nieuw', type: 'text', maxlength: '40', autocomplete: 'off', autocapitalize: 'words', placeholder: 'Naam die niet in de lijst staat' });
+  const $naam = h('input', { class: 'invoer', id: 'operator-nieuw', type: 'text', maxlength: String(M.OPERATOR_MAX_TEKENS), autocomplete: 'off', autocapitalize: 'characters', placeholder: beheer ? 'Nieuwe initialen (komen in de lijst)' : 'Naam die niet in de lijst staat' });
   const alleNamen = () => [...lijst, ...eerder, ...gekozen.filter((n) => !lijst.includes(n) && !eerder.includes(n))];
   const bewaarKeuze = () => bewaar(c.appId, 'beneden', 'operatoren', gekozen.length ? gekozen.slice() : undefined, { teken: false });
   function teken() {
@@ -937,23 +949,32 @@ async function kiesOperatoren(c) {
       } }, n, lijst.includes(n) ? null : h('small', {}, 'niet in de lijst'))));
     $gekozen.textContent = gekozen.length ? `Gekozen: ${gekozen.join(', ')}` : 'Nog niemand gekozen. Tik iedereen aan die aan de lijn staat.';
   }
-  async function voegToe() {
-    // Een komma scheidt de namen in de sheet: in een naam zelf mag ze niet staan.
-    const getypt = $naam.value.replace(/[,;]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
+  /** inLijst = true: de naam gaat ook in de keuzelijst van de sheet (script 2.6.0 en later), zodat ze morgen en op elke tablet een keuze is. */
+  async function voegToe(inLijst) {
+    const getypt = M.operatorNaam($naam.value);
     if (!getypt) return;
-    const naam = alleNamen().find((n) => n.toLowerCase() === getypt.toLowerCase()) || getypt;
+    const bestaand = alleNamen().find((n) => n.toLowerCase() === getypt.toLowerCase());
+    const naam = bestaand || getypt;
+    if (!bestaand && beheer && inLijst) {
+      await sync.operatorInWachtrij('toevoegen', naam);
+      lijst = M.operatorenActueel(snapshot, await db.alle('wachtrij'));
+      sync.verwerk();
+    }
     if (!gekozen.includes(naam)) gekozen = [...gekozen, naam];
     $naam.value = '';
     await bewaarKeuze();
     teken();
   }
-  $naam.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); voegToe(); } });
+  $naam.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); voegToe(true); } });
   const $laag = h('div', { class: 'kiezer', id: 'operatoren-kiezer' },
     h('h2', {}, `Operatoren · ${M.lijnVan(c) ? M.lijnVan(c) + ' · ' : ''}${c.code}`),
     $gekozen, $lijst,
-    h('div', { class: 'kiezer-nieuw' }, $naam, h('button', { class: 'knop', id: 'operator-toevoegen', onclick: voegToe }, 'Toevoegen')),
+    h('div', { class: 'kiezer-nieuw' }, $naam, h('button', { class: 'knop', id: 'operator-toevoegen', onclick: () => voegToe(true) }, 'Toevoegen')),
+    beheer ? h('p', { class: 'klein zacht' }, 'Een naam die je toevoegt, komt in de keuzelijst van de sheet en blijft een keuze (te beheren onder Instellingen > Operatoren).') : null,
     h('div', { class: 'knoppen' }, h('button', { class: 'knop hoofd', id: 'operatoren-klaar', onclick: async () => {
-      await voegToe(); // een naam die nog in het veld staat, telt mee
+      // Een naam die nog in het veld staat, telt mee voor deze controle; in de
+      // keuzelijst van de sheet komt ze alleen met een uitdrukkelijke "Toevoegen".
+      await voegToe(false);
       $laag.remove();
       toon({ behoudScroll: true });
     } }, 'Klaar')));
@@ -1596,6 +1617,82 @@ async function dagFotoBlok(soort, dc, bewerkbaar) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Operatoren beheren                                                  */
+/* ------------------------------------------------------------------ */
+
+let operatorWeg = null; // de naam waarvoor "Verwijderen" een tweede tik vraagt
+
+/**
+ * De keuzelijst "Operator" van de sheet: nakijken, toevoegen, verwijderen.
+ * Elke wijziging gaat via de wachtrij naar het script, dat de keuzelijst van de
+ * kolommen "Operator" aanpast; tot dan staat ze hier als "wacht op verzending".
+ */
+async function schermOperatoren() {
+  const items = (await db.alle('wachtrij')).filter((i) => i.soort === 'operatoren');
+  const beheer = M.operatorBeheerMogelijk(snapshot);
+  const lijst = M.operatorenActueel(snapshot, items);
+  const wacht = (naam, wat) => items.find((i) => i.wat === wat && i.naam.toLowerCase() === naam.toLowerCase());
+  const fout = await db.instelling('operatorenFout');
+  const $naam = h('input', { class: 'invoer', id: 'operator-beheer-nieuw', 'data-invoer': 'operator-beheer-nieuw', type: 'text', maxlength: String(M.OPERATOR_MAX_TEKENS), autocomplete: 'off', autocapitalize: 'characters', placeholder: 'Initialen' });
+  async function voegToe() {
+    const naam = M.operatorNaam($naam.value);
+    if (!naam) return;
+    if (lijst.some((n) => n.toLowerCase() === naam.toLowerCase())) { zetMelding('info', `"${naam}" staat al in de lijst.`, 1); $naam.value = ''; return; }
+    await sync.operatorInWachtrij('toevoegen', naam);
+    operatorWeg = null;
+    sync.verwerk();
+    await toon({ behoudScroll: true });
+  }
+  async function verwijder(naam) {
+    if (lijst.length <= 1) { zetMelding('fout', 'De laatste naam kan niet weg: de keuzelijst mag niet leeg worden.', 1); return; }
+    if (operatorWeg !== naam) { operatorWeg = naam; return toon({ behoudScroll: true }); }
+    operatorWeg = null;
+    await sync.operatorInWachtrij('verwijderen', naam);
+    sync.verwerk();
+    await toon({ behoudScroll: true });
+  }
+  $naam.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); voegToe(); } });
+  const alle = [...lijst, ...items.filter((i) => i.wat === 'verwijderen').map((i) => i.naam)];
+  return [
+    h('h2', {}, 'Operatoren'),
+    h('p', { class: 'stap' }, `De keuzelijst van de kolom "Operator" in de sheet, zoals ze opgehaald is${snapshot ? ` om ${dagEnUur(snapshot.opgehaaldOm)}` : ''}. Een wijziging hier komt in de sheet en geldt op elke tablet.`),
+    !snapshot ? h('div', { class: 'melding wacht' }, 'Nog geen gegevens opgehaald. Tik bovenaan op "Verversen".') : null,
+    snapshot && !beheer ? h('div', { class: 'melding wacht', id: 'operatoren-uitleg' }, `Het script (versie ${snapshot.scriptVersie || 'onbekend'}) kan de keuzelijst nog niet wijzigen: zet versie 2.6.0 online en tik op "Verversen". Tot dan kun je de lijst hier alleen nakijken.`) : null,
+    fout ? h('div', { class: 'melding fout', id: 'operatoren-fout' },
+      `De laatste wijziging is niet gelukt: "${fout.naam}" ${fout.wat === 'toevoegen' ? 'toevoegen' : 'verwijderen'} is door het script geweigerd (${fout.fout}). Ze is niet meer in de wachtrij.`,
+      h('div', { class: 'knoppen' }, h('button', { class: 'knop', id: 'operatoren-fout-weg', onclick: async () => { await db.zetInstelling('operatorenFout', null); toon({ behoudScroll: true }); } }, 'Gezien'))) : null,
+    beheer ? h('div', { class: 'kaart' },
+      h('div', { class: 'kiezer-nieuw' }, $naam, h('button', { class: 'knop', id: 'operator-beheer-toevoegen', onclick: voegToe }, 'Toevoegen')),
+      h('p', { class: 'klein zacht' }, 'Initialen zoals ze in de sheet moeten staan. Een komma mag niet: die scheidt de namen in de sheet.')) : null,
+    h('div', { class: 'kaart' },
+      h('table', { class: 'samenvatting operatoren', id: 'operatoren-tabel', 'data-aantal': String(lijst.length) }, h('tbody', {},
+        alle.map((naam) => {
+          const bij = wacht(naam, 'toevoegen');
+          const weg = wacht(naam, 'verwijderen');
+          const stand = weg ? 'wordt verwijderd (wacht op verzending)' : bij ? 'nieuw (wacht op verzending)' : '';
+          return h('tr', { 'data-naam': naam, 'data-stand': weg ? 'weg' : bij ? 'nieuw' : 'sheet' },
+            h('td', {}, h('strong', {}, naam), stand ? h('small', { class: 'zacht' }, ` · ${stand}`) : null),
+            h('td', { class: 'rechts' },
+              weg ? h('button', { class: 'keuze', 'data-actie': 'toch-houden', onclick: async () => { await sync.operatorUitWachtrij(weg); await toon({ behoudScroll: true }); } }, 'Toch houden')
+                : bij ? h('button', { class: 'keuze', 'data-actie': 'verwijderen', onclick: async () => { await sync.operatorUitWachtrij(bij); await toon({ behoudScroll: true }); } }, 'Verwijderen')
+                : beheer ? [
+                  h('button', { class: `keuze${operatorWeg === naam ? ' gevaar gekozen k-nok' : ''}`, 'data-actie': 'verwijderen', onclick: () => verwijder(naam) }, operatorWeg === naam ? 'Ja, verwijderen' : 'Verwijderen'),
+                  operatorWeg === naam ? h('button', { class: 'keuze', 'data-actie': 'nee', onclick: () => { operatorWeg = null; toon({ behoudScroll: true }); } }, 'Nee') : null
+                ] : null));
+        })))),
+    h('p', { class: 'klein zacht' }, 'Verwijderen haalt de naam uit de keuzelijst; wat al in de sheet staat, blijft staan. Een naam die de controleur bij Beneden intypt, komt hier vanzelf bij.'),
+    h('div', { class: 'knoppen' }, h('button', { class: 'knop', onclick: () => ga('#/instellingen') }, 'Terug naar instellingen'))
+  ];
+}
+
+/** De keuzelijst in de sheet is gewijzigd (door deze tablet): de bewaarde gegevens opnieuw inlezen. */
+async function operatorenGewijzigd() {
+  const vers = await db.haal('referentie', 'snapshot');
+  if (vers) snapshot = vers;
+  if (route()[0] === 'operatoren') await toon({ behoudScroll: true, achtergrond: true });
+}
+
+/* ------------------------------------------------------------------ */
 /* Einde van de rondgang                                               */
 /* ------------------------------------------------------------------ */
 
@@ -1613,7 +1710,7 @@ async function schermEinde() {
     h('div', { class: `eind${groen ? ' groen' : ''}`, id: 'eind', 'data-groen': String(groen) },
       h('strong', {}, groen ? 'Alles verzonden' : 'Nog niet alles verzonden'),
       groen ? `${controles.length} ${controles.length === 1 ? 'controle' : 'controles'} vandaag. De tablet mag weg.`
-        : `Er ${t.aantal === 1 ? 'wacht nog 1 item' : `wachten nog ${t.aantal} items`} op verzenden (controles, dagcontroles en foto's). Hou de app open tot dit scherm groen is.`),
+        : `Er ${t.aantal === 1 ? 'wacht nog 1 item' : `wachten nog ${t.aantal} items`} op verzenden (controles, dagcontroles, foto's en wijzigingen aan de operatoren). Hou de app open tot dit scherm groen is.`),
     dagNietGedaan.length ? h('div', { class: 'melding wacht', id: 'dag-niet-gedaan' }, `Vandaag nog niet afgesloten: ${dagNietGedaan.map((x) => M.DAGNAAM[x.soort]).join(' en ')}.`) : null,
     dagEerder.length ? h('div', { class: 'melding wacht', id: 'dag-eerder-open' }, `Begonnen en niet afgesloten op een eerdere dag: ${dagEerder.map((x) => `${M.DAGNAAM[x.soort]} (${datumLang(x.datum)})`).join(', ')}. Zie het startscherm.`) : null,
     !groen && t.fout ? h('div', { class: 'melding fout' }, `Laatste fout: ${t.fout}`) : null,
@@ -1644,6 +1741,13 @@ async function ververs({ stil = false } = {}) {
     const vers = { orders: s.orders, pallets: s.pallets, velden: s.velden, lijnen: Array.isArray(s.lijnen) ? s.lijnen : null, dag: s.dag || {}, waarschuwingen: s.waarschuwingen || [], bron: s.bron || {}, opgehaaldOm: Date.now(),
       // Voor "Vorige controle": de laatste rijen per lijn, en wanneer ernaar gevraagd is.
       vorige: s.vorige && typeof s.vorige === 'object' ? s.vorige : null, scriptVersie: s.scriptVersie || '', gevraagdOm };
+    // Is er sinds het vragen van deze gegevens een wijziging aan de operatoren
+    // verzonden, dan is die lijst nieuwer dan wat de sheet hier teruggaf.
+    const oud = await db.haal('referentie', 'snapshot');
+    if (oud && oud.operatorenOm > gevraagdOm && oud.velden) {
+      for (const id of ['operator1', 'operator2']) if (oud.velden[id] && vers.velden[id]) vers.velden[id].keuzes = oud.velden[id].keuzes;
+      vers.operatorenOm = oud.operatorenOm;
+    }
     await db.zet('referentie', vers, 'snapshot');
     snapshot = vers;
     await pasOpenControlesAan();
@@ -1809,11 +1913,12 @@ async function start() {
   setInterval(() => sync.verwerk(), 60 * 1000);
 
   if ('BroadcastChannel' in window) {
-    new BroadcastChannel('qc-rondgang').onmessage = () => {
+    new BroadcastChannel('qc-rondgang').onmessage = (e) => {
+      if (e.data && e.data.type === 'operatoren') { operatorenGewijzigd(); return; }
       const r = route();
       // Lijsten en overzichten tonen de status van de delen: opnieuw tekenen.
       // Invulschermen niet, anders verliest een tekstveld de cursor.
-      const overzicht = ingesteld && (r.length === 0 || r[0] === 'controles' || r[0] === 'einde' || (r[0] === 'c' && r.length === 2));
+      const overzicht = ingesteld && (r.length === 0 || r[0] === 'controles' || r[0] === 'einde' || r[0] === 'operatoren' || (r[0] === 'c' && r.length === 2));
       // In de rondgang wordt ook ingevuld: staat de cursor in een veld of is een
       // keuzelijst open, dan blijft het scherm staan tot de volgende tik.
       const actief = document.activeElement;

@@ -48,7 +48,14 @@ const INST = {
   // controleur op dat moment zelf mee bezig is, of een controle die hij
   // intussen naar een andere lijn verplaatst heeft.
   VORIGE_PER_LIJN: 3,
-  VERSIE: '2.4.0'
+  // Foto's bij "Magazijn en bufferzone": één kolom met deze kop (installeer()
+  // voegt ze toe), hoogstens zoveel foto's per dag. De links staan samen in
+  // één cel: "Foto 1 · Foto 2 · Foto 3".
+  MAGAZIJN_FOTO_KOP: "Foto's",
+  MAGAZIJN_FOTOS_MAX: 3,
+  // Operatoren: hoogstens zoveel tekens per naam; een komma scheidt de namen in de sheet.
+  OPERATOR_MAX_TEKENS: 40,
+  VERSIE: '2.6.0'
 };
 
 /**
@@ -175,6 +182,8 @@ function verwerk_(verzoek) {
       return foto_(verzoek);
     case 'dagcontrole':
       return dagcontrole_(verzoek);
+    case 'operatoren':
+      return operatoren_(verzoek);
     default:
       return { ok: false, code: 'ACTIE', fout: 'Onbekende actie: ' + verzoek.actie };
   }
@@ -420,7 +429,9 @@ function snapshot_(dwing) {
       dag[soort] = {
         tab: ind.tab.getName(),
         metingen: ind.metingen.map(function (m) { return { kop: m.kop }; }),
-        punten: ind.punten.map(function (p) { return { kop: p.kop, hulp: p.hulp }; })
+        punten: ind.punten.map(function (p) { return { kop: p.kop, hulp: p.hulp }; }),
+        // Hoeveel foto's de app bij deze dagcontrole mag nemen: 0 zolang de kolom ontbreekt.
+        fotos: ind.fotoKol ? INST.MAGAZIJN_FOTOS_MAX : 0
       };
     } catch (err) {
       dag[soort] = null;
@@ -1099,6 +1110,7 @@ function veiligeNaam_(tekst) {
 function foto_(v) {
   const fout = function (code, tekst) { return { ok: false, code: code, fout: tekst }; };
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (v.soort === 'magazijn') return dagFoto_(v);
   if (!uuid.test(String(v.appId || ''))) return fout('VERZOEK', 'Ongeldig app-ID.');
   if (!uuid.test(String(v.fotoId || ''))) return fout('VERZOEK', 'Ongeldig foto-ID.');
   if (!Object.prototype.hasOwnProperty.call(INST.FOTO_TEKST, v.soort)) return fout('VERZOEK', 'Ongeldige soort foto.');
@@ -1244,6 +1256,10 @@ function dagIndeling_(ss, soort) {
     const metingen = [];
     const punten = [];
     let eerstePunt = -1;
+    let fotoKol = 0;
+    for (let i = 0; i < kop.length; i++) {
+      if (/^foto'?s$/.test(norm_(kop[i]))) { fotoKol = i + 1; break; }
+    }
     for (let i = 0; i < onder.length; i++) {
       if (norm_(onder[i]) !== 'ok' || norm_(onder[i + 1]) !== 'nok') continue;
       if (eerstePunt === -1) eerstePunt = i;
@@ -1257,6 +1273,7 @@ function dagIndeling_(ss, soort) {
       });
     }
     for (let i = 1; i < (eerstePunt === -1 ? kop.length : eerstePunt); i++) {
+      if (i + 1 === fotoKol) continue; // de kolom "Foto's" is geen meting, waar ze ook staat
       const tekst = String(cel_(kop, i)).replace(/\s+/g, ' ').trim();
       if (tekst) metingen.push({ kop: tekst, sleutel: norm_(tekst), kol: i + 1 });
     }
@@ -1273,7 +1290,7 @@ function dagIndeling_(ss, soort) {
     });
     if (!actief.length) throw new Error('Geen controlepunten met selectievakjes gevonden in "' + INST.TAB_MAGAZIJN + '".');
     geenDubbels_(actief.concat(metingen), INST.TAB_MAGAZIJN);
-    return { soort: soort, tab: tab, tz: tz, eersteRij: eersteRij, metingen: metingen, punten: actief, data: data, laatste: laatste };
+    return { soort: soort, tab: tab, tz: tz, eersteRij: eersteRij, metingen: metingen, punten: actief, data: data, laatste: laatste, fotoKol: fotoKol };
   }
   throw new Error('Onbekende dagcontrole: ' + soort);
 }
@@ -1405,8 +1422,268 @@ function dagcontrole_(v) {
       });
     }
 
+    // De foto's van de dag (app 1.10.0 en later stuurt de lijsten mee): "volgt"
+    // zolang er foto's onderweg zijn; een foto die de controleur na het
+    // verzenden gewist heeft (fotosWeg) gaat uit de cel en naar de prullenbak.
+    // Zonder lijst (oudere app) blijft de cel onaangeroerd.
+    const uit = { ok: true, soort: v.soort, datum: v.datum, rij: rij, nieuw: nieuw };
+    if (v.soort === 'magazijn' && Array.isArray(v.fotos) && ind.fotoKol) {
+      const wegIds = Array.isArray(v.fotosWeg) ? v.fotosWeg.map(String) : [];
+      uit.fotosWeg = zetDagFotoCel_(tab.getRange(rij, ind.fotoKol), dagFotoId_(v.datum), v.fotos.map(String), wegIds, null);
+    }
+
     SpreadsheetApp.flush();
-    return { ok: true, soort: v.soort, datum: v.datum, rij: rij, nieuw: nieuw };
+    return uit;
+  } finally {
+    try { SpreadsheetApp.flush(); } catch (err) { /* de fout zelf is al onderweg */ }
+    slot.releaseLock();
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Operatoren: de keuzelijst van de kolommen "Operator"                */
+/* ------------------------------------------------------------------ */
+
+/** Een naam zoals ze in de keuzelijst mag staan, of '' als ze niet deugt. */
+function operatorNaam_(tekst) {
+  return String(tekst == null ? '' : tekst).replace(/[,;]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, INST.OPERATOR_MAX_TEKENS);
+}
+
+/**
+ * Toevoegen aan of verwijderen uit de keuzelijst van de kolommen "Operator"
+ * (beide kolommen, alle rijen vanaf de eerste gegevensrij). De lijst is de
+ * gegevensvalidatie van de eerste vrije rij, zoals de app ze ook krijgt.
+ * Alleen een getypte lijst ("Lijst met items") kan hier gewijzigd worden; een
+ * lijst uit een bereik niet (dan wijzig je dat bereik in de sheet).
+ *   v.toevoegen   : namen die erbij moeten (al aanwezig = niets te doen)
+ *   v.verwijderen : namen die eruit moeten (niet aanwezig = niets te doen)
+ * Zonder beide: alleen de huidige lijst teruggeven. Bestaande rijen blijven
+ * onaangeroerd (de validatie geldt voor nieuwe invoer); een verwijderde naam in
+ * een oude rij krijgt in de sheet enkel het rode hoekje.
+ */
+function operatoren_(v) {
+  const fout = function (code, tekst) { return { ok: false, code: code, fout: tekst }; };
+  const T = SpreadsheetApp.DataValidationCriteria;
+  const schoon = function (lijst) {
+    return (Array.isArray(lijst) ? lijst : []).map(operatorNaam_).filter(function (x) { return x; });
+  };
+  const toevoegen = schoon(v.toevoegen);
+  const verwijderen = schoon(v.verwijderen);
+  const tevergelijken = function (x) { return x.toLowerCase(); };
+
+  const slot = LockService.getScriptLock();
+  try {
+    slot.waitLock(INST.WACHT_OP_SLOT_MS);
+  } catch (err) {
+    return { ok: false, code: 'BEZET', tijdelijk: true, fout: 'De sheet is bezet, probeer opnieuw.' };
+  }
+  try {
+    const tab = qcTab_();
+    let k;
+    try { k = kolommenOfFout_(tab); } catch (err) { return fout('INDELING', err.message); }
+    const kolommen = [k.kol.operator1, k.kol.operator2].filter(function (c) { return c; });
+    if (!kolommen.length) return fout('INDELING', 'Kolom "Operator" niet gevonden.');
+    const rij = Math.min(vrijeRij_(tab, k.kol), tab.getMaxRows());
+    // De regel van elke kolom apart (ze kunnen verschillen), van de eerste vrije
+    // rij. Zijn de voorbereide rijen op, dan is dat een ingevulde rij, en haar cel
+    // kan door zetBuitenLijst_ op "waarschuwen" staan. Dat mag niet de hele kolom
+    // besmetten: dan geldt de strengheid van de dichtstbijzijnde cel erboven die
+    // nog weigert (tot tien rijen terug).
+    const ingevuld = String(tab.getRange(rij, k.kol.code).getValue()).trim() !== '';
+    const regels = kolommen.map(function (c) {
+      let regel = tab.getRange(rij, c).getDataValidation();
+      if (!regel && rij > INST.EERSTE_RIJ) regel = tab.getRange(rij - 1, c).getDataValidation();
+      let streng = null;
+      if (ingevuld && regel && regel.getAllowInvalid()) {
+        for (let r = rij - 1; r >= Math.max(INST.EERSTE_RIJ, rij - 10) && streng === null; r--) {
+          const x = tab.getRange(r, c).getDataValidation();
+          if (x && x.getCriteriaType() === T.VALUE_IN_LIST && !x.getAllowInvalid()) streng = true;
+        }
+      }
+      return { kolom: c, regel: regel, streng: streng };
+    });
+    const regel = regels[0].regel;
+    if (!regel || regel.getCriteriaType() !== T.VALUE_IN_LIST) {
+      return fout('INDELING', regel && regel.getCriteriaType() === T.VALUE_IN_RANGE
+        ? 'De keuzelijst van "Operator" komt uit een bereik in de sheet; wijzig dat bereik in de sheet zelf.'
+        : 'De kolom "Operator" heeft geen keuzelijst.');
+    }
+    const huidig = regel.getCriteriaValues()[0].map(function (x) { return String(x).trim(); }).filter(function (x) { return x; });
+    const nieuw = huidig.slice();
+    const gedaan = { toegevoegd: [], verwijderd: [] };
+    toevoegen.forEach(function (naam) {
+      if (nieuw.map(tevergelijken).indexOf(tevergelijken(naam)) !== -1) return;
+      nieuw.push(naam);
+      gedaan.toegevoegd.push(naam);
+    });
+    verwijderen.forEach(function (naam) {
+      const i = nieuw.map(tevergelijken).indexOf(tevergelijken(naam));
+      if (i === -1) return;
+      gedaan.verwijderd.push(nieuw[i]);
+      nieuw.splice(i, 1);
+    });
+    if (!nieuw.length) return fout('VERZOEK', 'De keuzelijst mag niet leeg worden.');
+    if (nieuw.length > 500) return fout('VERZOEK', 'Een keuzelijst in Sheets mag hoogstens 500 namen hebben.');
+    if (gedaan.toegevoegd.length || gedaan.verwijderd.length) {
+      // Per kolom haar eigen regel (weigeren of waarschuwen, hulptekst, uitklaplijst)
+      // met de nieuwe lijst, van de eerste gegevensrij tot onderaan.
+      const n = tab.getMaxRows() - INST.EERSTE_RIJ + 1;
+      regels.forEach(function (r) {
+        const bron = r.regel && r.regel.getCriteriaType() === T.VALUE_IN_LIST ? r.regel : regel;
+        const uitklap = bron.getCriteriaValues()[1] !== false;
+        const bouwer = bron.copy().requireValueInList(nieuw, uitklap);
+        if (r.streng !== null) bouwer.setAllowInvalid(!r.streng);
+        tab.getRange(INST.EERSTE_RIJ, r.kolom, n, 1).setDataValidation(bouwer.build());
+      });
+      SpreadsheetApp.flush();
+    }
+    return { ok: true, operatoren: nieuw, toegevoegd: gedaan.toegevoegd, verwijderd: gedaan.verwijderd };
+  } finally {
+    try { SpreadsheetApp.flush(); } catch (err) { /* de fout zelf is al onderweg */ }
+    slot.releaseLock();
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Foto's bij "Magazijn en bufferzone"                                 */
+/* ------------------------------------------------------------------ */
+
+/** Het app-ID van een dagcontrole, zoals de app het gebruikt en zoals het in de beschrijving van de foto staat. */
+function dagFotoId_(datum) {
+  return 'magazijn:' + datum;
+}
+
+/**
+ * De stukken met een link in een cel: [{ tekst, url }]. Tekst zonder link (zoals
+ * "volgt") telt niet mee. Een fout bij het lezen gaat door naar de aanroeper:
+ * liever het verzoek laten mislukken (de tablet probeert opnieuw) dan de cel
+ * overschrijven met minder links dan er stonden.
+ */
+function fotoRuns_(cel) {
+  const rt = cel.getRichTextValue();
+  if (!rt) return [];
+  return rt.getRuns().filter(function (run) { return run.getLinkUrl(); })
+    .map(function (run) { return { tekst: String(run.getText() || '').trim() || 'Foto', url: run.getLinkUrl() }; });
+}
+
+/** Schrijft de stukken met hun link in één cel: "Foto 1 · Foto 2 · volgt". */
+function schrijfFotoCel_(cel, runs, volgt) {
+  const delen = runs.map(function (r) { return r.tekst; });
+  if (volgt) delen.push('volgt');
+  if (!delen.length) { cel.setValue(''); return; }
+  const tekst = delen.join(' · ');
+  const bouwer = SpreadsheetApp.newRichTextValue().setText(tekst);
+  let pos = 0;
+  runs.forEach(function (r) {
+    bouwer.setLinkUrl(pos, pos + r.tekst.length, r.url);
+    pos += r.tekst.length + 3;
+  });
+  cel.setRichTextValue(bouwer.build());
+}
+
+/**
+ * Brengt de fotocel van een dag in lijn met wat de app meldt:
+ *   fotoIds  : de foto's van de dag volgens de app; er staat "volgt" zolang er
+ *              één nog niet aangekomen is;
+ *   wegIds   : foto's die de controleur na het verzenden gewist heeft; hun link
+ *              gaat weg en het bestand naar de prullenbak;
+ *   nieuwe   : { fotoId, url } om toe te voegen, of null.
+ * Al de rest in de cel blijft staan, ook een eigen foto die deze tablet niet
+ * kent (andere tablet, of de opslag van de tablet is gewist) en een link die
+ * iemand zelf geplakt heeft. Geeft het aantal verwijderde foto's terug.
+ */
+function zetDagFotoCel_(cel, dagId, fotoIds, wegIds, nieuwe) {
+  const runs = fotoRuns_(cel);
+  const houden = [];
+  const aanwezig = {};
+  const urls = {};
+  let weg = 0;
+  runs.forEach(function (r) {
+    if (urls[r.url]) return; // dezelfde link twee keer: één keer volstaat
+    const eigen = eigenFoto_(r.url, dagId, 'magazijn');
+    if (eigen && wegIds.indexOf(eigen.fotoId) !== -1) { if (naarPrullenbak_(eigen)) weg += 1; return; }
+    if (eigen) aanwezig[eigen.fotoId] = true;
+    urls[r.url] = true;
+    houden.push({ tekst: r.tekst, url: r.url, eigen: !!eigen });
+  });
+  if (nieuwe && !aanwezig[nieuwe.fotoId] && !urls[nieuwe.url]) { houden.push({ tekst: '', url: nieuwe.url, eigen: true }); aanwezig[nieuwe.fotoId] = true; }
+  // De eigen foto's heten "Foto 1", "Foto 2", ... in de volgorde van de cel; andere links houden hun tekst.
+  let n = 0;
+  houden.forEach(function (r) { if (r.eigen) { n += 1; r.tekst = 'Foto ' + n; } });
+  const volgt = fotoIds.some(function (id) { return !aanwezig[id]; });
+  schrijfFotoCel_(cel, houden, volgt);
+  return weg;
+}
+
+/**
+ * Bewaart één foto van "Magazijn en bufferzone" in Drive en zet de link in de
+ * cel "Foto's" van de rij van die dag, naast de links die er al staan. Bestaat
+ * de rij nog niet, dan antwoordt het script "later opnieuw". Een herhaling
+ * (zelfde foto-ID) maakt nooit een tweede bestand of een tweede link.
+ * v.fotos: alle foto-ID's van de dag volgens de app, om "volgt" te bepalen;
+ * v.fotosWeg: foto's die na het verzenden gewist zijn (zie zetDagFotoCel_).
+ */
+function dagFoto_(v) {
+  const fout = function (code, tekst) { return { ok: false, code: code, fout: tekst }; };
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuid.test(String(v.fotoId || ''))) return fout('VERZOEK', 'Ongeldig foto-ID.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(v.datum || ''))) return fout('VERZOEK', 'Ongeldige datum.');
+  if (typeof v.data !== 'string' || v.data.length < 100) return fout('VERZOEK', 'Geen foto ontvangen.');
+  const fotoIds = Array.isArray(v.fotos) ? v.fotos.map(String) : [String(v.fotoId)];
+  if (fotoIds.indexOf(String(v.fotoId)) === -1) fotoIds.push(String(v.fotoId));
+  if (fotoIds.length > INST.MAGAZIJN_FOTOS_MAX) return fout('VERZOEK', 'Hoogstens ' + INST.MAGAZIJN_FOTOS_MAX + " foto's per dag.");
+
+  const slot = LockService.getScriptLock();
+  try {
+    slot.waitLock(INST.WACHT_OP_SLOT_MS);
+  } catch (err) {
+    return { ok: false, code: 'BEZET', tijdelijk: true, fout: 'De sheet is bezet, probeer opnieuw.' };
+  }
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let ind;
+    try { ind = dagIndeling_(ss, 'magazijn'); } catch (err) { return fout('INDELING', err.message); }
+    if (!ind.fotoKol) return fout('INDELING', 'Kolom "' + INST.MAGAZIJN_FOTO_KOP + '" ontbreekt in "' + ind.tab.getName() + '": voer installeer() uit in de editor.');
+    const tab = ind.tab;
+    const doel = dagNummerVan_(v.datum);
+    let rij = 0;
+    for (let i = 0; i < ind.data.length && !rij; i++) {
+      if (dagNummer_(cel_(ind.data[i], 0), ind.tz) === doel) rij = ind.eersteRij + i;
+    }
+    if (!rij) return { ok: false, code: 'LATER', tijdelijk: true, fout: 'De dagcontrole staat nog niet in de sheet; de foto volgt later.' };
+    const dagId = dagFotoId_(v.datum);
+    const cel = tab.getRange(rij, ind.fotoKol);
+    // Staat deze foto er al (herhaling na een verloren bevestiging)? Dan alleen de cel bijwerken.
+    const al = fotoRuns_(cel).some(function (r) { const e = eigenFoto_(r.url, dagId, 'magazijn'); return e && e.fotoId === String(v.fotoId); });
+    const wegIds = Array.isArray(v.fotosWeg) ? v.fotosWeg.map(String) : [];
+    if (al) {
+      zetDagFotoCel_(cel, dagId, fotoIds, wegIds, null);
+      SpreadsheetApp.flush();
+      return { ok: true, soort: 'magazijn', datum: v.datum, fotoId: v.fotoId, rij: rij, nieuw: false };
+    }
+    const genomen = new Date(v.genomenOm);
+    const naam = [v.datum, 'magazijn', String(v.fotoId).slice(0, 8)].join('_') + '.jpg';
+    const maand = subMap_(fotoMap_(), v.datum.slice(0, 7));
+    const bestaand = maand.getFilesByName(naam);
+    let bestand = null;
+    let nieuw = false;
+    while (!bestand && bestaand.hasNext()) {
+      const b = bestaand.next();
+      if (!b.isTrashed()) bestand = b;
+    }
+    if (!bestand) {
+      bestand = maand.createFile(Utilities.newBlob(Utilities.base64Decode(v.data), 'image/jpeg', naam));
+      bestand.setDescription('QC Rondgang ' + dagId + ' magazijn ' + v.fotoId + (isNaN(genomen.getTime()) ? '' : ' ' + genomen.toISOString()));
+      nieuw = true;
+    }
+    // Het bewaren duurt even: is de rij intussen verschoven, dan komt de link er niet in.
+    SpreadsheetApp.flush();
+    if (dagNummer_(tab.getRange(rij, 1).getValue(), ind.tz) !== doel) {
+      return { ok: false, code: 'BEZET', tijdelijk: true, fout: 'Rij ' + rij + ' is verschoven tijdens het bewaren van de foto; opnieuw proberen.' };
+    }
+    zetDagFotoCel_(cel, dagId, fotoIds, wegIds, { fotoId: String(v.fotoId), url: bestand.getUrl() });
+    SpreadsheetApp.flush();
+    return { ok: true, soort: 'magazijn', datum: v.datum, fotoId: v.fotoId, rij: rij, nieuw: nieuw };
   } finally {
     try { SpreadsheetApp.flush(); } catch (err) { /* de fout zelf is al onderweg */ }
     slot.releaseLock();
@@ -1443,6 +1720,32 @@ function installeer() {
     Logger.log('Toegevoegd vanaf kolom ' + letter_(max + 1) + ': ' + ontbrekend.map(function (v) { return v.nieuw; }).join(', '));
   } else {
     Logger.log('Alle kolommen van de app bestaan al.');
+  }
+
+  // De kolom "Foto's" in "Magazijn en bufferzone", rechts van de laatste kolom.
+  try {
+    const ind = dagIndeling_(SpreadsheetApp.getActiveSpreadsheet(), 'magazijn');
+    if (ind.fotoKol) {
+      Logger.log('Kolom "' + INST.MAGAZIJN_FOTO_KOP + '" in "' + ind.tab.getName() + '": ' + letter_(ind.fotoKol));
+    } else {
+      const mt = ind.tab;
+      const max = mt.getMaxColumns();
+      mt.insertColumnsAfter(max, 1);
+      mt.showColumns(max + 1, 1);
+      const kop = mt.getRange(INST.MAGAZIJN_KOPRIJ, max + 1);
+      kop.clearDataValidations();
+      kop.setValue(INST.MAGAZIJN_FOTO_KOP);
+      mt.getRange(1, max + 1).setValue('QC-app');
+      const rijen = mt.getMaxRows() - INST.MAGAZIJN_KOPRIJ;
+      if (rijen > 0) {
+        const onder = mt.getRange(INST.MAGAZIJN_KOPRIJ + 1, max + 1, rijen, 1);
+        onder.clearDataValidations();
+        onder.clearContent();
+      }
+      Logger.log('Toegevoegd in "' + mt.getName() + '": kolom ' + letter_(max + 1) + ' "' + INST.MAGAZIJN_FOTO_KOP + '"');
+    }
+  } catch (err) {
+    Logger.log('FOUT: de kolom "' + INST.MAGAZIJN_FOTO_KOP + '" kon niet nagekeken of toegevoegd worden: ' + err.message);
   }
 
   const props = PropertiesService.getScriptProperties();
@@ -1492,7 +1795,7 @@ function nakijken() {
   ['werk', 'magazijn'].forEach(function (soort) {
     const d = s.dag && s.dag[soort];
     if (!d) return;
-    Logger.log('Dagcontrole ' + soort + ' ("' + d.tab + '"): ' + d.metingen.length + ' metingen, ' + d.punten.length + ' controlepunten');
+    Logger.log('Dagcontrole ' + soort + ' ("' + d.tab + '"): ' + d.metingen.length + ' metingen, ' + d.punten.length + ' controlepunten' + (soort === 'magazijn' ? (d.fotos ? ', kolom "' + INST.MAGAZIJN_FOTO_KOP + '" aanwezig (tot ' + d.fotos + " foto's)" : ', GEEN kolom "' + INST.MAGAZIJN_FOTO_KOP + '" (voer installeer uit)') : ''));
     d.punten.forEach(function (p, i) { Logger.log('   ' + (i + 1) + '. ' + p.kop.slice(0, 70)); });
   });
   if (s.waarschuwingen.length) Logger.log('WAARSCHUWINGEN: ' + s.waarschuwingen.join(' | '));

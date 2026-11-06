@@ -62,6 +62,29 @@ export async function dagUitWachtrij(dagId) {
   meld('wachtrij');
 }
 
+/**
+ * Een operator toevoegen aan of verwijderen uit de keuzelijst van de sheet.
+ * Eén item per naam; een tegengestelde wens voor dezelfde naam die nog wacht,
+ * vervalt (toevoegen na verwijderen = niets te doen, en omgekeerd).
+ * Geeft terug of er een item in de wachtrij gekomen is.
+ */
+export async function operatorInWachtrij(wat, naam) {
+  const sleutel = naam.toLowerCase();
+  const andere = wat === 'toevoegen' ? 'verwijderen' : 'toevoegen';
+  const bestaand = (await db.alle('wachtrij')).filter((i) => i.soort === 'operatoren' && i.naam.toLowerCase() === sleutel);
+  for (const i of bestaand) await db.wis('wachtrij', i.id);
+  const tegengesteld = bestaand.some((i) => i.wat === andere);
+  if (!tegengesteld) await db.zet('wachtrij', nieuwItem({ id: `operatoren:${wat}:${sleutel}`, soort: 'operatoren', wat, naam }));
+  meld('wachtrij');
+  if (!tegengesteld) vraagAchtergrondSync();
+  return !tegengesteld;
+}
+
+export async function operatorUitWachtrij(item) {
+  await db.wis('wachtrij', item.id);
+  meld('wachtrij');
+}
+
 /** Vraagt Chrome om de wachtrij ook te verzenden als de app gesloten is. */
 export async function vraagAchtergrondSync() {
   try {
@@ -78,11 +101,12 @@ export async function toestand() {
   const controles = new Set(items.filter((i) => i.soort === 'controle').map((i) => i.appId)).size;
   const fotos = items.filter((i) => i.soort === 'foto').length;
   const dagen = items.filter((i) => i.soort === 'dag').length;
+  const operatoren = items.filter((i) => i.soort === 'operatoren').length;
   // Geen verbinding is geen fout: dat is de gewone toestand in de productiezone.
   const metFout = items.filter((i) => i.laatsteFout && !i.geenVerbinding).sort((a, b) => b.nietVoor - a.nietVoor)[0];
   const volgende = items.length ? Math.min(...items.map((i) => i.nietVoor)) : null;
   return {
-    aantal: items.length, controles, fotos, dagen, volgende,
+    aantal: items.length, controles, fotos, dagen, operatoren, volgende,
     fout: metFout ? metFout.laatsteFout : null,
     geenVerbinding: items.some((i) => i.geenVerbinding)
   };
@@ -174,6 +198,41 @@ async function verstuurDagFoto(foto) {
   return 'verzonden';
 }
 
+/**
+ * Een wijziging aan de keuzelijst "Operator" in de sheet. Lukt ze, dan komt de
+ * nieuwe lijst meteen in de bewaarde gegevens, zodat de naam ook zonder
+ * "Verversen" een keuze blijft (of weg is).
+ */
+async function verstuurOperator(item) {
+  let antwoord;
+  try {
+    antwoord = await roep('operatoren', { [item.wat]: [item.naam] });
+  } catch (e) {
+    // Een fout van het script zelf (te oud, lijst uit een bereik, lijst zou leeg
+    // worden) gaat niet over met opnieuw proberen: het item gaat weg en de
+    // reden blijft staan voor het scherm Operatoren.
+    if (e && e.code && !e.netwerk && !e.tijdelijk && e.code !== 'BEZET' && e.code !== 'SLEUTEL' && e.code !== 'INSTELLING') {
+      await db.zetInstelling('operatorenFout', { naam: item.naam, wat: item.wat, fout: e.message, om: Date.now() });
+      meld('operatoren');
+      return 'weg';
+    }
+    throw e;
+  }
+  if (!Array.isArray(antwoord.operatoren)) throw Object.assign(new Error('De bevestiging bevat geen keuzelijst.'), { netwerk: true });
+  // De lijst meteen in de bewaarde gegevens, in één transactie; "Verversen"
+  // dat tegelijk bezig was, bewaart deze lijst (zie ververs in app.js).
+  await db.werkBij('referentie', 'snapshot', (s) => {
+    if (!s.velden) return false;
+    for (const id of ['operator1', 'operator2']) {
+      if (s.velden[id]) s.velden[id].keuzes = antwoord.operatoren.slice();
+    }
+    s.operatorenOm = Date.now();
+  });
+  await db.zetInstelling('operatorenFout', null);
+  meld('operatoren');
+  return 'verzonden';
+}
+
 async function verstuurDag(item) {
   const dc = await db.haal('dagcontroles', item.dagId);
   if (!dc || dc.status !== 'klaar') return 'weg';
@@ -225,9 +284,9 @@ async function verwerkNu(handmatig) {
   for (const item of items) {
     if (!handmatig && item.nietVoor > Date.now()) continue;
 
-    if (item.soort === 'foto' || item.soort === 'dag') {
+    if (item.soort === 'foto' || item.soort === 'dag' || item.soort === 'operatoren') {
       try {
-        const uit = item.soort === 'foto' ? await verstuurFoto(item) : await verstuurDag(item);
+        const uit = item.soort === 'foto' ? await verstuurFoto(item) : item.soort === 'dag' ? await verstuurDag(item) : await verstuurOperator(item);
         if (uit === 'weg' || uit === 'verzonden') await db.wis('wachtrij', item.id);
         // De foto's van deze dagcontrole hoeven nu niet langer te wachten.
         if (item.soort === 'dag' && uit === 'verzonden') await laatFotosLos(items, item.dagId);

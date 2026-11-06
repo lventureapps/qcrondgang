@@ -4,11 +4,12 @@
 import { instelling } from './db.js';
 
 export class ApiFout extends Error {
-  constructor(bericht, { netwerk = false, verbinding = false, code = null } = {}) {
+  constructor(bericht, { netwerk = false, verbinding = false, code = null, tijdelijk = false } = {}) {
     super(bericht);
     this.netwerk = netwerk;       // geen (bruikbaar) antwoord gekregen
     this.verbinding = verbinding; // het verzoek zelf kwam niet door: gewoon geen verbinding
     this.code = code;             // foutcode van het script
+    this.tijdelijk = tijdelijk;   // het script zegt zelf: later opnieuw proberen
   }
 }
 
@@ -48,7 +49,7 @@ export async function roep(actie, data = {}, { timeout = 90000 } = {}) {
     throw new ApiFout(`Onverwacht antwoord van het script (HTTP ${res.status}). Klopt het adres?`, { netwerk: true });
   }
   if (!json || json.ok !== true) {
-    throw new ApiFout((json && (json.fout || json.code)) || 'Het script gaf een fout.', { code: (json && json.code) || 'FOUT' });
+    throw new ApiFout((json && (json.fout || json.code)) || 'Het script gaf een fout.', { code: (json && json.code) || 'FOUT', tijdelijk: !!(json && json.tijdelijk) });
   }
   return json;
 }
