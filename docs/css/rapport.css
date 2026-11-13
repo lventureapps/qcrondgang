@@ -1,0 +1,142 @@
+/* QC Rondgang - het rapport als A4-blad (scherm en afdruk). Zie js/rapport.js. */
+
+@font-face { font-family: 'Inter Rapport'; font-weight: 400; font-style: normal; font-display: block; src: url('../fonts/inter-latin-400-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Inter Rapport'; font-weight: 600; font-style: normal; font-display: block; src: url('../fonts/inter-latin-600-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Inter Rapport'; font-weight: 700; font-style: normal; font-display: block; src: url('../fonts/inter-latin-700-normal.woff2') format('woff2'); }
+
+/* ---------- bediening (alleen op het scherm) ---------- */
+.rapport-scherm { display: flex; flex-direction: column; gap: 10px; }
+.rapport-bediening { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; background: var(--kaart); border: 1px solid var(--lijn); border-radius: var(--straal); padding: 10px 12px; }
+.rapport-bediening .groep { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.rapport-bediening label { font-size: .85rem; color: var(--zacht); }
+.rapport-bediening select { min-height: 44px; padding: 4px 8px; border-radius: 9px; border: 1px solid var(--lijn); font: inherit; font-weight: 700; background: #fff; }
+.rapport-bediening .ruimte { flex: 1 1 auto; }
+.rapport-bediening .keuze, .rapport-bediening .knop { flex: 0 0 auto; min-height: 44px; padding: 6px 14px; font-size: .95rem; width: auto; }
+.rapport-stand { font-size: .85rem; color: var(--zacht); }
+.blad-houder { overflow: hidden; display: flex; justify-content: center; }
+.blad-schaal { transform-origin: top left; }
+
+/* ---------- het blad ---------- */
+.blad {
+  --r-inkt: #1b1b19; --r-zacht: #5c5c56; --r-lijn: #e3e2dc; --r-vlak: #f4f3ef; --r-blauw: #184f95;
+  box-sizing: border-box; width: 210mm; height: 297mm; padding: 9mm 10mm 8mm; overflow: hidden;
+  background: #fff; color: var(--r-inkt); box-shadow: 0 2px 14px rgba(0, 0, 0, .18);
+  font-family: 'Inter Rapport', 'Segoe UI', Roboto, Arial, sans-serif; font-size: 8.6pt; line-height: 1.3;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+.blad *, .blad *::before, .blad *::after { box-sizing: border-box; }
+.blad-inhoud { display: flex; flex-direction: column; gap: 4.2mm; min-height: 100%; }
+.blad h1, .blad h2, .blad p { margin: 0; }
+.blad h2 { font-size: 9.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: #3d3d39; margin-bottom: 2mm; }
+.blad h2 span { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--r-zacht); }
+.blad .zacht { color: var(--r-zacht); }
+.blad .ico { width: 5.2mm; height: 5.2mm; color: #3a3a36; flex: none; display: block; }
+.blad .ico.klein { width: 3.6mm; height: 3.6mm; display: inline-block; vertical-align: -0.7mm; margin-right: 1mm; }
+.blad .ico.mini { width: 3mm; height: 3mm; display: inline-block; vertical-align: -0.6mm; margin-right: .8mm; }
+.blad .ico.groot { width: 9mm; height: 9mm; }
+.blad .st { width: 4.6mm; height: 4.6mm; flex: none; display: block; }
+.blad .st.mini { width: 3.2mm; height: 3.2mm; display: inline-block; vertical-align: -0.7mm; margin: 0 .6mm 0 1.6mm; }
+.blad .st.groot { width: 9mm; height: 9mm; display: inline-block; vertical-align: -1.2mm; margin-right: 1.6mm; }
+.blad .pijl { width: 3.2mm; height: 3.2mm; display: inline-block; vertical-align: -0.6mm; margin-right: .5mm; }
+
+/* kop */
+.r-kop { display: flex; gap: 5mm; align-items: stretch; }
+.r-kop-links { flex: 1 1 auto; min-width: 0; }
+.r-titel { font-size: 19pt; font-weight: 700; line-height: 1.1; letter-spacing: -.01em; }
+.r-titel span { color: var(--r-blauw); }
+.r-titel small { font-size: 10pt; font-weight: 600; color: var(--r-zacht); margin-left: 2mm; letter-spacing: 0; }
+.r-sub { color: var(--r-zacht); margin-top: 1.2mm; }
+.r-sub b { color: var(--r-inkt); }
+.r-tegels { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2.5mm; margin-top: 3mm; }
+.r-tegel { border: 1px solid var(--r-lijn); border-radius: 2.5mm; padding: 2mm 2.5mm; text-align: center; }
+.r-tegel-kop { font-size: 7pt; text-transform: uppercase; letter-spacing: .05em; color: var(--r-zacht); white-space: nowrap; }
+.r-tegel-waarde { font-size: 17pt; font-weight: 700; line-height: 1.15; }
+.r-tegel-sub { font-size: 7pt; color: var(--r-zacht); }
+.r-totaal { flex: 0 0 56mm; border: .7mm solid; border-radius: 3mm; padding: 3mm; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; gap: .8mm; }
+.r-totaal-kop { font-size: 7.2pt; text-transform: uppercase; letter-spacing: .05em; color: var(--r-zacht); }
+.r-totaal-waarde { font-size: 28pt; font-weight: 700; line-height: 1.05; white-space: nowrap; }
+.r-totaal-sub { font-size: 7.4pt; color: var(--r-zacht); }
+
+/* twee kolommen */
+.r-twee { display: grid; grid-template-columns: 1fr 1fr; gap: 6mm; align-items: start; }
+.blad:not(.intern) .r-twee { grid-template-columns: 1.08fr 1fr; }
+
+/* productieversie: geen raster per lijn, dus alles groter (hangt aan de lijn) */
+.blad:not(.intern) { font-size: 9.4pt; }
+.blad:not(.intern) .r-punt { min-height: 8.6mm; grid-template-columns: 7mm minmax(0, 1fr) 24mm 14mm 5.2mm; }
+.blad:not(.intern) .r-punt .ico { width: 6mm; height: 6mm; }
+.blad:not(.intern) .r-punt .st { width: 5.2mm; height: 5.2mm; }
+.blad:not(.intern) .r-punt-naam, .blad:not(.intern) .r-punt-pct { font-size: 9.4pt; }
+.blad:not(.intern) .r-kaart { font-size: 9.2pt; padding: 3mm 3.4mm; gap: 2mm; }
+.blad:not(.intern) .r-kaart-kop strong { font-size: 11.5pt; }
+.blad:not(.intern) .r-kaart-kop span { font-size: 9.2pt; }
+.blad:not(.intern) .r-staven { height: 34mm; }
+
+/* per controlepunt */
+.r-punt { display: grid; grid-template-columns: 6mm minmax(0, 1fr) 24mm 13mm 4.6mm; gap: 1.6mm; align-items: center; min-height: 7.4mm; }
+.r-punt-naam { font-size: 8.4pt; line-height: 1.15; overflow-wrap: anywhere; }
+.r-punt-pct small { display: block; font-size: 6.4pt; color: #8a8a83; }
+.r-deel { font-size: 6.8pt; text-transform: uppercase; letter-spacing: .06em; color: #8a8a83; border-bottom: 1px solid var(--r-lijn); padding: 1.2mm 0 .6mm; margin-bottom: .6mm; }
+.r-deel:first-of-type { padding-top: 0; }
+.r-balk { position: relative; height: 2.6mm; background: var(--r-vlak); border-radius: 1.3mm; }
+.r-balk i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 1.3mm; }
+.r-balk u { position: absolute; top: -1mm; bottom: -1mm; border-left: .3mm dashed #77776f; }
+.r-punt-pct { text-align: right; font-size: 8.4pt; line-height: 1.15; }
+.r-legende { font-size: 6.8pt; color: var(--r-zacht); margin-top: 1.8mm; }
+
+/* per lijn */
+.r-raster { border-collapse: separate; border-spacing: .35mm; width: 100%; table-layout: fixed; }
+.r-raster th { padding: 0; font-weight: 600; }
+.r-raster thead th .ico { width: 4.2mm; height: 4.2mm; margin: 0 auto; }
+.r-raster th.r-lijn { text-align: left; width: 21mm; font-size: 7.8pt; white-space: nowrap; padding-right: 1mm; }
+.r-raster th.r-lijn small { color: #8a8a83; font-weight: 400; font-size: 6.2pt; margin-left: .8mm; }
+.r-raster td { height: 5.3mm; text-align: center; font-weight: 700; font-size: 7.6pt; border-radius: .8mm; }
+.r-raster td.leeg { background: var(--r-vlak); }
+.r-raster .som { width: 10mm; border-left: .5mm solid var(--r-lijn); font-size: 7.4pt; }
+.r-raster td.r-leeg { font-weight: 400; color: var(--r-zacht); text-align: left; }
+
+/* aandachtspunten */
+.r-kaarten.rij { display: grid; grid-template-columns: 1fr 1fr 1fr .82fr; gap: 3mm; align-items: stretch; }
+.r-kaarten.kolom { display: flex; flex-direction: column; gap: 2.6mm; }
+.r-kaart { border: 1px solid var(--r-lijn); border-top: 1.6mm solid; border-radius: 2.5mm; padding: 2.4mm 3mm; display: flex; flex-direction: column; gap: 1.6mm; font-size: 8.3pt; break-inside: avoid; }
+.r-kaart-leeg { border-top: 1px dashed var(--r-lijn); border-style: dashed; color: var(--r-zacht); flex-direction: row; align-items: center; justify-content: center; gap: 1mm; }
+.r-kaart-leeg .st.mini { margin: 0; }
+.r-kaart-kop { display: flex; gap: 2.4mm; align-items: center; }
+.r-kaart-kop strong { display: block; font-size: 10pt; line-height: 1.15; }
+.r-kaart-kop span { font-size: 8.2pt; }
+.r-regel { display: flex; gap: 1.6mm; align-items: baseline; line-height: 1.25; }
+.r-label { flex: none; font-size: 6.2pt; text-transform: uppercase; letter-spacing: .05em; color: #fff; background: #77776f; border-radius: .8mm; padding: .3mm 1.2mm; }
+.r-label.blauw { background: var(--r-blauw); }
+.r-actie { font-weight: 600; }
+.r-opvolging { font-size: 7pt; color: var(--r-zacht); margin-top: auto; }
+
+/* trend */
+.r-trend { border: 1px solid var(--r-lijn); border-radius: 2.5mm; padding: 2.4mm 3mm; display: flex; flex-direction: column; }
+.r-rechts .r-trend { margin-top: 2.6mm; }
+.r-trend-kop { font-size: 7pt; text-transform: uppercase; letter-spacing: .05em; color: var(--r-zacht); }
+.r-staven { display: flex; align-items: stretch; gap: 1.2mm; height: 26mm; margin-top: 2mm; flex: 1 1 auto; }
+.r-staaf { flex: 1 1 0; display: flex; flex-direction: column; align-items: stretch; min-width: 0; }
+.r-staaf-w { font-size: 6.4pt; text-align: center; color: #3d3d39; height: 3.4mm; white-space: nowrap; }
+.r-staaf-b { position: relative; flex: 1 1 auto; display: flex; align-items: flex-end; border-bottom: .3mm solid #b9b8b0; }
+.r-staaf-b u { position: absolute; left: -.7mm; right: -.7mm; border-top: .3mm dashed #77776f; }
+.r-staaf-b i { display: block; width: 100%; border-radius: .8mm .8mm 0 0; }
+.r-staaf-m { font-size: 6.6pt; text-align: center; color: var(--r-zacht); margin-top: .6mm; height: 3.4mm; }
+.r-staaf.deze .r-staaf-m { color: var(--r-inkt); font-weight: 700; }
+.r-trend-voet { font-size: 6.2pt; color: #8a8a83; margin-top: .8mm; }
+
+.r-toelichting { font-size: 9pt; padding: 2mm 3mm; border-left: 1.2mm solid var(--r-blauw); background: var(--r-vlak); border-radius: 0 1.5mm 1.5mm 0; }
+.r-waarschuwing { font-size: 7pt; color: #b42323; }
+.r-voet { margin-top: auto; display: flex; justify-content: space-between; gap: 4mm; font-size: 6.6pt; color: #8a8a83; border-top: 1px solid var(--r-lijn); padding-top: 1.4mm; }
+
+/* ---------- afdrukken: alleen het blad ---------- */
+@media print {
+  @page { size: A4 portrait; margin: 0; }
+  html, body { background: #fff !important; margin: 0 !important; padding: 0 !important; }
+  body.rapport-druk #balk, body.rapport-druk .rapport-bediening, body.rapport-druk #scherm > .melding, body.rapport-druk .rapport-stand { display: none !important; }
+  body.rapport-druk #scherm { max-width: none !important; margin: 0 !important; padding: 0 !important; }
+  body.rapport-druk .rapport-scherm { display: block; }
+  body.rapport-druk .blad-houder { display: block; overflow: visible; height: auto !important; }
+  body.rapport-druk .blad-schaal { transform: none !important; width: auto !important; height: auto !important; }
+  /* Iets minder dan 297 mm: een blad van exact één A4 hoog geeft door afronding soms een lege tweede pagina. */
+  body.rapport-druk .blad { height: 296mm; box-shadow: none; margin: 0; break-after: avoid; page-break-after: avoid; }
+}

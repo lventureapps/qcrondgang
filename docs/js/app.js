@@ -4,6 +4,7 @@ import { roep } from './api.js';
 import * as sync from './sync.js';
 import * as M from './model.js';
 import { APP_VERSIE } from './versie.js';
+import { rapportHtml, pasBladAan, maandenVanaf, periodeNaam } from './rapport.js';
 
 const $balk = document.getElementById('balk');
 const $scherm = document.getElementById('scherm');
@@ -34,6 +35,15 @@ const FOTO_LANGSTE_ZIJDE = 1600;
 const FOTO_KWALITEIT = 0.8;
 const FOTO_WACHT_MS = 8000; // zo lang mag de camera over één foto doen
 const isDatum = (t) => /^\d{4}-\d{2}-\d{2}$/.test(String(t || ''));
+// Bestanden die de service worker bewaart (sw.js, BESTANDEN): voor het instelscherm.
+const APP_BESTANDEN = 18;
+// Maand- en jaarrapport
+const RAPPORT_START = '2026-09';        // eerste maand met gegevens van de app (Rapport.gs, RAPPORT.START)
+const RAPPORT_VERS_MS = 30 * 60 * 1000; // ouder dan dit: bij het openen vanzelf opnieuw ophalen
+let rapportIntern = false;              // interne versie (met lijnen) of de versie voor productie
+const rapportBezig = new Set();         // sleutels ('2026-10', '2026') die nu opgehaald worden
+const rapportGeprobeerd = new Set();    // dit bezoek al vanzelf opgehaald (geen lus bij een fout)
+let rapportFout = null;                 // { sleutel, tekst }
 
 /* ------------------------------------------------------------------ */
 /* Hulpfuncties                                                        */
@@ -195,6 +205,7 @@ async function toon({ behoudScroll = false, achtergrond = false } = {}) {
     else if (r[0] === 'controles' || r[0] === 'nieuw') inhoud = await schermControles();
     else if (r[0] === 'einde') inhoud = await schermEinde();
     else if (r[0] === 'operatoren') inhoud = await schermOperatoren();
+    else if (r[0] === 'rapport') inhoud = await schermRapport(r[1]);
     else if (r[0] === 'c') inhoud = await schermControle(r[1], r[2], r[3]);
     else if (r[0] === 'dag' && M.DAGSOORTEN.includes(r[1])) inhoud = await schermDag(r[1], r[2], Number(r[3]) || 0);
     else inhoud = [h('p', {}, 'Onbekend scherm.')];
@@ -217,6 +228,7 @@ async function toon({ behoudScroll = false, achtergrond = false } = {}) {
   const getypt = veld ? actief.value : null;
   $scherm.replaceChildren(...[kop, inhoud].flat(Infinity).filter(Boolean));
   $scherm.classList.toggle('breed', !!$scherm.querySelector('.deel-raster, .dag-raster, .rondgang'));
+  document.body.classList.toggle('rapport-druk', r[0] === 'rapport');
   vorigeUrls.forEach((u) => URL.revokeObjectURL(u));
   if (veld) {
     const terug = veld === '#zoek' ? document.getElementById('zoek') : $scherm.querySelector(`[data-invoer="${veld}"]`);
@@ -291,7 +303,7 @@ async function schermInstellingen() {
         knop.textContent = uit === 'nieuw' ? 'Nieuwe versie gevonden: tik bovenaan op Bijwerken'
           : uit === 'geen' ? 'Dit is de nieuwste versie' : `Controleren mislukt: ${versieFout || 'onbekende reden'}`;
       } }, 'Op nieuwe versie controleren')),
-      h('p', { id: 'inst-offline' }, bewaard === null ? 'App op de tablet bewaard: onbekend' : bewaard >= 13 ? `App op de tablet bewaard: ja (${bewaard} bestanden). Ze start ook zonder verbinding.` : `App op de tablet bewaard: NEE (${bewaard} bestanden). Open de app één keer met verbinding voor je de productiezone ingaat.`),
+      h('p', { id: 'inst-offline' }, bewaard === null ? 'App op de tablet bewaard: onbekend' : bewaard >= APP_BESTANDEN ? `App op de tablet bewaard: ja (${bewaard} bestanden). Ze start ook zonder verbinding.` : `App op de tablet bewaard: NEE (${bewaard} bestanden). Open de app één keer met verbinding voor je de productiezone ingaat.`),
       h('p', {}, vast === null ? 'Vaste opslag: onbekend' : vast ? 'Vaste opslag: ja, de browser ruimt de gegevens niet zelf op.' : 'Vaste opslag: nee. Installeer de app op het startscherm; dan kent Chrome dit meestal toe.'),
       h('p', { id: 'inst-scherm' }, `Scherm: ${window.innerWidth} × ${window.innerHeight} punten. Boven en Beneden zijn getekend om elk op één scherm te passen vanaf 1280 × 730 (liggend) of 800 × 1200 (staand).`),
       snapshot ? h('p', {}, `Gegevens van ${dagEnUur(snapshot.opgehaaldOm)}: ${snapshot.orders.length} orders, ${snapshot.pallets.length} pallets.`) : null)
@@ -323,7 +335,10 @@ async function schermStart() {
         return h('button', { class: `tegel${kan ? ' actief' : ''}`, id: `tegel-${soort}`, disabled: !kan, 'data-status': status, onclick: () => ga(`#/dag/${soort}/${M.vandaag()}`) },
           h('strong', {}, M.DAGNAAM[soort]),
           h('span', { class: 'zacht' }, kan ? `Vandaag: ${status === 'open' ? 'nog niet gedaan' : STATUSTEKST[status]}` : 'De controlepunten zijn niet opgehaald. Ververs de gegevens.'));
-      }))),
+      })),
+      h('button', { class: 'tegel actief', id: 'tegel-rapport', onclick: () => ga('#/rapport') },
+        h('strong', {}, 'Maand- en jaarrapport'),
+        h('span', { class: 'zacht' }, 'Bekijken en afdrukken'))),
     dagEerder.length ? [
       h('h2', {}, 'Dagcontroles van eerdere dagen'),
       dagEerder.map((dc) => h('button', { class: 'rij', 'data-dag': dc.id, 'data-status': dc.status, onclick: () => ga(`#/dag/${dc.soort}/${dc.datum}`) },
@@ -1693,6 +1708,110 @@ async function operatorenGewijzigd() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Maand- en jaarrapport                                               */
+/* ------------------------------------------------------------------ */
+
+/** Standaard: de vorige maand (het rapport dat nu nagelezen wordt). */
+function rapportStandaard() {
+  const d = new Date();
+  d.setDate(0);
+  const s = `${d.getFullYear()}-${p2(d.getMonth() + 1)}`;
+  return s < RAPPORT_START ? RAPPORT_START : s;
+}
+
+const isRapportSleutel = (s) => /^\d{4}(-\d{2})?$/.test(String(s || ''));
+
+/** Haalt de cijfers bij het script en bewaart ze op het toestel (ook om zonder verbinding te bekijken). */
+async function haalRapport(sleutel) {
+  if (rapportBezig.has(sleutel)) return;
+  rapportBezig.add(sleutel);
+  if (rapportFout && rapportFout.sleutel === sleutel) rapportFout = null;
+  const hier = () => route()[0] === 'rapport' && (isRapportSleutel(route()[1]) ? route()[1] : rapportStandaard()) === sleutel;
+  if (hier()) toon({ behoudScroll: true, achtergrond: true });
+  try {
+    const c = await roep('rapport', /^\d{4}$/.test(sleutel) ? { jaar: sleutel } : { maand: sleutel }, { timeout: SNAPSHOT_WACHT_MS });
+    await db.zet('referentie', { opgehaaldOm: Date.now(), cijfers: c }, `rapport:${sleutel}`);
+  } catch (e) {
+    const oud = e.code === 'ACTIE' ? ' Het script kent het rapport nog niet: zet script 2.8.0 online.' : '';
+    rapportFout = { sleutel, tekst: `${e.message}${oud}` };
+  } finally {
+    rapportBezig.delete(sleutel);
+    if (hier()) toon({ behoudScroll: true, achtergrond: true });
+  }
+}
+
+/** Het blad op het scherm verkleinen tot het in de breedte past; op papier altijd op ware grootte. */
+async function schaalRapport() {
+  const blad = $scherm.querySelector('.blad');
+  if (!blad) return;
+  try { await document.fonts.ready; } catch (e) { /* geen fonts-API */ }
+  pasBladAan(blad);
+  const houder = blad.closest('.blad-houder');
+  const schaal = blad.closest('.blad-schaal');
+  const breedte = blad.offsetWidth;
+  const hoogte = blad.offsetHeight;
+  const factor = Math.min(1, (houder.clientWidth - 2) / breedte);
+  schaal.style.transform = factor < 1 ? `scale(${factor})` : '';
+  schaal.style.width = `${breedte * factor}px`;
+  houder.style.height = `${hoogte * factor + 4}px`;
+}
+
+async function drukRapport() {
+  document.body.classList.add('rapport-druk');
+  try { await document.fonts.ready; } catch (e) { /* geen fonts-API */ }
+  pasBladAan($scherm.querySelector('.blad'));
+  window.print();
+}
+
+async function schermRapport(gevraagd) {
+  const sleutel = isRapportSleutel(gevraagd) ? gevraagd : rapportStandaard();
+  const jaar = /^\d{4}$/.test(sleutel);
+  const bewaard = await db.haal('referentie', `rapport:${sleutel}`);
+  const start = (bewaard && bewaard.cijfers && bewaard.cijfers.start) || RAPPORT_START;
+  const maanden = maandenVanaf(start);
+  const jaren = [...new Set(maanden.map((m) => m.slice(0, 4)))];
+  const bezig = rapportBezig.has(sleutel);
+  const oud = !bewaard || Date.now() - bewaard.opgehaaldOm > RAPPORT_VERS_MS;
+  if (navigator.onLine && !bezig && oud && !rapportGeprobeerd.has(sleutel)) {
+    rapportGeprobeerd.add(sleutel);
+    setTimeout(() => haalRapport(sleutel), 0);
+  }
+  const fout = rapportFout && rapportFout.sleutel === sleutel ? rapportFout.tekst : null;
+  const keuze = (wat, tekst, id) => h('button', { class: `keuze${rapportIntern === wat ? ' gekozen' : ''}`, id, 'aria-pressed': String(rapportIntern === wat),
+    onclick: () => { rapportIntern = wat; toon({ behoudScroll: true }); } }, tekst);
+  const stand = bezig ? 'Cijfers ophalen… (dit duurt even: het script telt de hele sheet)'
+    : bewaard ? `Cijfers van ${dagEnUur(bewaard.opgehaaldOm)}${navigator.onLine ? '' : ' · geen verbinding'}`
+    : navigator.onLine ? 'Nog geen cijfers opgehaald.' : 'Nog geen cijfers op dit toestel en geen verbinding.';
+  if (bewaard) naToon = () => schaalRapport();
+  return h('div', { class: 'rapport-scherm' },
+    h('div', { class: 'rapport-bediening' },
+      h('div', { class: 'groep' },
+        h('label', { for: 'rapport-maand' }, 'Maand'),
+        h('select', { id: 'rapport-maand', onchange: (e) => { if (e.target.value) ga(`#/rapport/${e.target.value}`); } },
+          h('option', { value: '', selected: jaar }, '—'),
+          maanden.map((m) => h('option', { value: m, selected: m === sleutel }, periodeNaam(m)))),
+        h('label', { for: 'rapport-jaar' }, 'of jaar'),
+        h('select', { id: 'rapport-jaar', onchange: (e) => { if (e.target.value) ga(`#/rapport/${e.target.value}`); } },
+          h('option', { value: '', selected: !jaar }, '—'),
+          jaren.map((j) => h('option', { value: j, selected: j === sleutel }, j)))),
+      h('div', { class: 'groep', role: 'group', 'aria-label': 'Versie' },
+        keuze(false, 'Productie', 'rapport-productie'),
+        keuze(true, 'Intern (met lijnen)', 'rapport-intern')),
+      h('div', { class: 'ruimte' }),
+      h('div', { class: 'groep' },
+        h('button', { class: 'knop', id: 'rapport-vernieuw', title: 'Cijfers opnieuw bij de sheet halen', disabled: bezig || !navigator.onLine, onclick: () => haalRapport(sleutel) }, bezig ? 'Bezig…' : 'Vernieuwen'),
+        h('button', { class: 'knop hoofd', id: 'rapport-druk', disabled: !bewaard, onclick: drukRapport }, 'Afdrukken'))),
+    h('p', { class: 'rapport-stand', id: 'rapport-stand' }, stand),
+    fout ? h('div', { class: 'melding fout', id: 'rapport-fout' }, `Ophalen mislukt: ${fout}${bewaard ? ' De vorige cijfers blijven getoond.' : ''}`) : null,
+    rapportIntern ? h('p', { class: 'rapport-stand' }, 'Interne versie: met het raster per lijn. Niet bedoeld om aan de lijnen op te hangen.') : null,
+    bewaard ? (() => {
+      const houder = h('div', { class: 'blad-houder' }, h('div', { class: 'blad-schaal' }));
+      houder.firstChild.innerHTML = rapportHtml(bewaard.cijfers, { intern: rapportIntern, opgehaaldOm: new Date(bewaard.opgehaaldOm).toISOString() });
+      return houder;
+    })() : (bezig ? h('p', { class: 'laden' }, 'Laden…') : null));
+}
+
+/* ------------------------------------------------------------------ */
 /* Einde van de rondgang                                               */
 /* ------------------------------------------------------------------ */
 
@@ -1902,6 +2021,7 @@ async function start() {
     rbBericht = null;
     nieuw.zoek = ''; nieuw.gekozen = null; nieuw.alles = false; // het zoekveld van de rondgang begint telkens leeg
     bevestigWeg = null;
+    if (route()[0] !== 'rapport') rapportGeprobeerd.clear(); // bij een volgend bezoek mag het rapport opnieuw vanzelf vernieuwen
     document.querySelectorAll('.kiezer').forEach((el) => el.remove()); // een keuzescherm hoort bij het scherm eronder
     // Een melding hoort bij het scherm waar ze getoond werd.
     if (melding) { if (melding.over > 0) melding.over -= 1; else melding = null; }
@@ -1909,6 +2029,9 @@ async function start() {
   });
   window.addEventListener('online', () => { werkBalkBij(); sync.verwerk({ handmatig: true }); controleerCache(); });
   window.addEventListener('offline', () => werkBalkBij());
+  window.addEventListener('resize', () => { if (route()[0] === 'rapport') schaalRapport(); });
+  // Ook bij Ctrl+P: het blad op één A4.
+  window.addEventListener('beforeprint', () => { const blad = $scherm.querySelector('.blad'); if (blad) pasBladAan(blad); });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { sync.verwerk(); zoekNieuweVersie(); } });
   setInterval(() => sync.verwerk(), 60 * 1000);
 
