@@ -52,6 +52,12 @@ let rapportBevestigVraag = null;        // sleutel waarvoor "Bevestigen" één k
 let rapportHeropenVraag = null;         // sleutel waarvoor de reden gevraagd wordt
 let rapportHeropenReden = '';
 let rapportNaam = '';                   // naam op dit toestel, voor de geschiedenis
+// Automatisch bewaren als concept: kort na de laatste wijziging, en meteen bij het verlaten van een veld.
+const RAPPORT_AUTO_MS = 2500;
+let rapportAutoTimer = null;
+let rapportAutoSleutel = null;
+const rapportAuto = new Map();          // sleutel -> { bezig, belofte, opnieuw, fout, om }
+let rapportHuidig = null;               // { sleutel, c }: het rapport dat nu op het scherm staat
 let oorzakenStaat = { bezig: false, fout: null, lijst: null };
 
 /* ------------------------------------------------------------------ */
@@ -1792,7 +1798,7 @@ async function rapportKladVan(sleutel, c) {
   // een gewijzigd klad van een oudere versie vervalt (bij bewaren zou het geweigerd worden).
   if (k && (!k.gewijzigd || k.basis !== basis)) k = null;
   if (!k) {
-    k = { basis, gewijzigd: false, inhoud: JSON.parse(JSON.stringify((c.register && c.register.inhoud) || standaardInhoud(c))) };
+    k = { basis, gewijzigd: false, teller: 0, inhoud: JSON.parse(JSON.stringify((c.register && c.register.inhoud) || standaardInhoud(c))) };
   }
   rapportKlad.set(sleutel, k);
   return k;
@@ -1803,16 +1809,17 @@ function rapportGewijzigd(sleutel, c, { herteken = false } = {}) {
   const k = rapportKlad.get(sleutel);
   if (!k) return;
   k.gewijzigd = true;
+  k.teller = (k.teller || 0) + 1;
   clearTimeout(rapportKladTimer);
   rapportKladTimer = setTimeout(() => { db.zet('referentie', k, `rapportklad:${sleutel}`).catch(() => {}); }, 300);
+  planAutoBewaar(sleutel);
   if (herteken) { toon({ behoudScroll: true }); return; }
   const schaal = $scherm.querySelector('.blad-schaal');
   if (schaal) {
     schaal.innerHTML = rapportHtml(c, { intern: rapportIntern, inhoud: k.inhoud, opgehaaldOm: c.gemaaktOm });
     schaalRapport();
   }
-  const st = $scherm.querySelector('#ra-stand');
-  if (st) st.textContent = rapportStandTekst(c, k);
+  toonAutoStand(sleutel);
   ['#ra-bewaar', '#ra-bevestig'].forEach((id) => { const b = $scherm.querySelector(id); if (b && b.dataset.kan === '1') b.disabled = false; });
   const druk = $scherm.querySelector('#rapport-druk');
   if (druk) druk.disabled = true;
@@ -1824,7 +1831,100 @@ function rapportStandTekst(c, k) {
   const r = c.register || { status: 'voorstel', versie: 0 };
   if (r.status === 'bevestigd') return `Bevestigd${r.versie > 1 ? ` (versie ${r.versie})` : ''} op ${dagEnUur(Date.parse(r.om))}${r.door ? ` door ${r.door}` : ''}. Afdrukken kan. Wijzigen kan na heropenen.`;
   const basis = r.status === 'concept' ? `Concept${r.versie > 1 ? ` (versie ${r.versie}, heropend${r.reden ? `: ${r.reden}` : ''})` : ''}, bewaard ${dagEnUur(Date.parse(r.om))}${r.door ? ` door ${r.door}` : ''}` : 'Voorstel, nog niet bewaard';
-  return `${basis}${k && k.gewijzigd ? ' · niet-bewaarde wijzigingen' : ''}. Bevestig om af te drukken.`;
+  return `${basis}. Bevestig om af te drukken.`;
+}
+
+/** De regel over het automatisch bewaren, onder de stand. */
+function rapportAutoTekst(sleutel, k) {
+  const st = rapportAuto.get(sleutel) || {};
+  if (st.bezig) return 'Bewaren…';
+  if (k && k.gewijzigd) {
+    if (!navigator.onLine) return 'Geen verbinding: de wijzigingen blijven op dit toestel en worden bewaard zodra er verbinding is.';
+    if (st.fout) return `Niet bewaard (${st.fout}). Nieuwe poging bij de volgende wijziging, of tik op "Nu bewaren".`;
+    return 'Niet-bewaarde wijzigingen · worden zo automatisch bewaard';
+  }
+  if (st.om) return `✓ Automatisch bewaard om ${uur(st.om)}`;
+  return '';
+}
+
+/** Werkt de stand en de regel "automatisch bewaren" bij, zonder het scherm opnieuw te tekenen (de invoer blijft). */
+function toonAutoStand(sleutel) {
+  if (!rapportHuidig || rapportHuidig.sleutel !== sleutel || !rapportHier(sleutel)) return;
+  const k = rapportKlad.get(sleutel);
+  const st = $scherm.querySelector('#ra-stand');
+  if (st) st.textContent = rapportStandTekst(rapportHuidig.c, k);
+  const au = $scherm.querySelector('#ra-auto');
+  if (au) {
+    const s = rapportAuto.get(sleutel) || {};
+    au.textContent = rapportAutoTekst(sleutel, k);
+    au.dataset.stand = s.bezig ? 'bezig' : k && k.gewijzigd ? (s.fout || !navigator.onLine ? 'fout' : 'wacht') : s.om ? 'ok' : '';
+  }
+  const b = $scherm.querySelector('#ra-bewaar');
+  if (b && b.dataset.kan === '1') b.disabled = !(k && k.gewijzigd) || !!(rapportAuto.get(sleutel) || {}).bezig;
+}
+
+function planAutoBewaar(sleutel, wacht = RAPPORT_AUTO_MS) {
+  clearTimeout(rapportAutoTimer);
+  rapportAutoSleutel = sleutel;
+  rapportAutoTimer = setTimeout(() => { rapportAutoTimer = null; rapportAutoBewaar(sleutel); }, wacht);
+}
+
+/** Bewaart wat nog wacht meteen (bij het verlaten van een veld, van het scherm of van de app). */
+function bewaarWachtendNu() {
+  if (rapportAutoTimer && rapportAutoSleutel) planAutoBewaar(rapportAutoSleutel, 0);
+}
+
+/**
+ * Bewaart het klad stil als concept: het scherm wordt niet opnieuw getekend en
+ * de invoer blijft bruikbaar. Wat tijdens het bewaren nog gewijzigd wordt, gaat
+ * mee in een volgende ronde. Een conflict (een ander toestel bewaarde, of het
+ * rapport is bevestigd) stopt het automatisch bewaren en toont de gewone melding.
+ */
+async function rapportAutoBewaar(sleutel) {
+  const st = rapportAuto.get(sleutel) || {};
+  rapportAuto.set(sleutel, st);
+  if (st.bezig) { st.opnieuw = true; return st.belofte; }
+  const k = rapportKlad.get(sleutel);
+  if (!k || !k.gewijzigd || rapportActie || !navigator.onLine) { toonAutoStand(sleutel); return; }
+  const bewaard = await db.haal('referentie', `rapport:${sleutel}`);
+  const reg = bewaard && bewaard.cijfers && bewaard.cijfers.register;
+  if (!reg || reg.status === 'bevestigd' || k.basis !== (reg.om || '') || st.conflict === k.basis) { toonAutoStand(sleutel); return; }
+  st.bezig = true;
+  st.fout = null;
+  toonAutoStand(sleutel);
+  const teller = k.teller;
+  const inhoud = JSON.parse(JSON.stringify(k.inhoud));
+  st.belofte = (async () => {
+    try {
+      const r = await roep('rapportBewaar', { periode: sleutel, basis: k.basis, door: (rapportNaam || '').trim(), inhoud }, { timeout: SNAPSHOT_WACHT_MS });
+      const vers = await db.haal('referentie', `rapport:${sleutel}`);
+      if (vers) { vers.cijfers.register = r.register; await db.zet('referentie', vers, `rapport:${sleutel}`); }
+      if (rapportHuidig && rapportHuidig.sleutel === sleutel) rapportHuidig.c.register = r.register;
+      k.basis = r.register.om;
+      if (k.teller === teller) {
+        k.gewijzigd = false;
+        await db.wis('referentie', `rapportklad:${sleutel}`);
+      } else {
+        await db.zet('referentie', k, `rapportklad:${sleutel}`);
+        st.opnieuw = true;
+      }
+      st.om = Date.now();
+    } catch (e) {
+      if (e.code === 'GEWIJZIGD' || e.code === 'BEVESTIGD') {
+        st.conflict = k.basis; // niet opnieuw proberen op deze versie: eerst "Laatste versie"
+        rapportMelding = { sleutel, soort: 'fout', tekst: `${e.message} Tik op "Laatste versie" om ze te laden (je wijzigingen hier vervallen dan).`, verouderd: true };
+        st.bezig = false;
+        if (rapportHier(sleutel)) toon({ behoudScroll: true });
+        return;
+      }
+      st.fout = e.netwerk || !navigator.onLine ? 'geen verbinding met het script' : e.message;
+    } finally {
+      st.bezig = false;
+    }
+    toonAutoStand(sleutel);
+    if (st.opnieuw) { st.opnieuw = false; planAutoBewaar(sleutel, 0); }
+  })();
+  return st.belofte;
 }
 
 function rapportWaarschuwing(inhoud) {
@@ -1842,6 +1942,11 @@ let rapportPuntNamen = {};
 const puntNaam = (id) => rapportPuntNamen[id] || id;
 
 async function rapportVerstuur(sleutel, soort, extra = {}) {
+  // Een automatisch bewaren dat nog loopt of wacht: eerst afronden, anders klopt de basis niet.
+  if (rapportAutoTimer && rapportAutoSleutel === sleutel) { clearTimeout(rapportAutoTimer); rapportAutoTimer = null; }
+  const lopend = rapportAuto.get(sleutel);
+  if (lopend && lopend.bezig) { try { await lopend.belofte; } catch (e) { /* de fout staat al in de stand */ } }
+  if (rapportAutoTimer && rapportAutoSleutel === sleutel) { clearTimeout(rapportAutoTimer); rapportAutoTimer = null; }
   const bewaard = await db.haal('referentie', `rapport:${sleutel}`);
   if (!bewaard) return;
   const c = bewaard.cijfers;
@@ -1850,7 +1955,10 @@ async function rapportVerstuur(sleutel, soort, extra = {}) {
   if ((soort === 'rapportBevestig' || soort === 'rapportHeropen') && !naam) {
     rapportBevestigVraag = null;
     rapportMelding = { sleutel, soort: 'fout', tekst: 'Vul eerst je naam in (bij "Naam").' };
-    return toon({ behoudScroll: true });
+    await toon({ behoudScroll: true });
+    const veld = $scherm.querySelector('#ra-naam');
+    if (veld) { veld.scrollIntoView({ block: 'center' }); veld.focus(); }
+    return;
   }
   rapportActie = soort;
   rapportMelding = null;
@@ -1861,6 +1969,8 @@ async function rapportVerstuur(sleutel, soort, extra = {}) {
     const r = await roep(soort, data, { timeout: SNAPSHOT_WACHT_MS });
     rapportKlad.delete(sleutel);
     await db.wis('referentie', `rapportklad:${sleutel}`);
+    const au = rapportAuto.get(sleutel);
+    if (au) { au.fout = null; au.om = soort === 'rapportBewaar' ? Date.now() : null; }
     if (soort === 'rapportBevestig') {
       await db.zet('referentie', { opgehaaldOm: Date.now(), cijfers: r }, `rapport:${sleutel}`);
       rapportMelding = { sleutel, soort: 'ok', tekst: 'Bevestigd. Het rapport kan nu afgedrukt worden; de cijfers liggen vast.' };
@@ -1872,6 +1982,7 @@ async function rapportVerstuur(sleutel, soort, extra = {}) {
     }
   } catch (e) {
     const verouderd = e.code === 'GEWIJZIGD' || e.code === 'BEVESTIGD';
+    if (verouderd && k) { const au = rapportAuto.get(sleutel) || {}; au.conflict = k.basis; rapportAuto.set(sleutel, au); }
     rapportMelding = { sleutel, soort: 'fout', tekst: `${e.message}${verouderd ? ' Tik op "Laatste versie" om ze te laden (je wijzigingen hier vervallen dan).' : ''}`, verouderd };
   } finally {
     rapportActie = null;
@@ -1882,13 +1993,14 @@ async function rapportVerstuur(sleutel, soort, extra = {}) {
 
 async function rapportLaatsteVersie(sleutel) {
   rapportKlad.delete(sleutel);
+  rapportAuto.delete(sleutel);
   await db.wis('referentie', `rapportklad:${sleutel}`);
   rapportMelding = null;
   haalRapport(sleutel);
 }
 
 /** Het paneel met de aandachtspunten, acties, notities en de knoppen bewaren, bevestigen, heropenen. */
-function rapportPaneel(sleutel, c, k, { online, kan }) {
+function rapportPaneel(sleutel, c, k, { online, kan, mld }) {
   const reg = c.register || { status: 'voorstel', versie: 0, geschiedenis: [] };
   const bevestigd = reg.status === 'bevestigd';
   const bewerk = kan && online && !bevestigd && !rapportActie;
@@ -1933,11 +2045,36 @@ function rapportPaneel(sleutel, c, k, { online, kan }) {
   const nogTeKiezen = kandidaten.filter((x) => !ih.aandachtspunten.some((a) => a.id === x.id));
   const bevestigVraag = rapportBevestigVraag === sleutel;
   const heropenVraag = rapportHeropenVraag === sleutel;
-  return h('section', { class: 'ra-paneel', 'aria-label': 'Aandachtspunten en acties' },
+  const knoppen = h('div', { class: 'ra-knoppen' },
+      !bevestigd ? h('button', { class: 'knop', id: 'ra-bewaar', 'data-kan': bewerk ? '1' : '0', disabled: !bewerk || !k.gewijzigd, onclick: () => rapportVerstuur(sleutel, 'rapportBewaar') }, rapportActie === 'rapportBewaar' ? 'Bewaren…' : 'Nu bewaren') : null,
+      !bevestigd ? h('button', { class: `knop hoofd${bevestigVraag ? ' gevaar' : ''}`, id: 'ra-bevestig', 'data-kan': bewerk ? '1' : '0', disabled: !bewerk,
+        onclick: () => {
+          if (!bevestigVraag) { rapportBevestigVraag = sleutel; toon({ behoudScroll: true }); setTimeout(() => { if (rapportBevestigVraag === sleutel) { rapportBevestigVraag = null; if (rapportHier(sleutel)) toon({ behoudScroll: true }); } }, 6000); return; }
+          rapportVerstuur(sleutel, 'rapportBevestig');
+        } }, rapportActie === 'rapportBevestig' ? 'Bevestigen…' : bevestigVraag ? 'Zeker? Cijfers worden vastgelegd. Tik nog eens' : 'Bevestigen') : null,
+      bevestigd && !heropenVraag ? h('button', { class: 'knop', id: 'ra-heropen', disabled: !online || !kan || !!rapportActie, onclick: () => { rapportHeropenVraag = sleutel; toon({ behoudScroll: true }); } }, 'Heropenen') : null);
+  const heropenBlok = bevestigd && heropenVraag ? h('div', { class: 'ra-heropen' },
+      h('label', { class: 'ra-label', for: 'ra-reden' }, 'Waarom heropenen? (verplicht, komt in de geschiedenis)'),
+      h('input', { type: 'text', id: 'ra-reden', maxlength: '200', 'data-invoer': 'ra-reden', value: rapportHeropenReden, oninput: (e) => { rapportHeropenReden = e.target.value; } }),
+      h('div', { class: 'ra-knoppen' },
+        h('button', { class: 'knop hoofd', id: 'ra-heropen-ok', disabled: !!rapportActie, onclick: () => {
+          if (!rapportHeropenReden.trim()) { rapportMelding = { sleutel, soort: 'fout', tekst: 'Geef een reden om te heropenen.' }; return toon({ behoudScroll: true }); }
+          const reden = rapportHeropenReden; rapportHeropenReden = '';
+          rapportVerstuur(sleutel, 'rapportHeropen', { reden });
+        } }, rapportActie === 'rapportHeropen' ? 'Heropenen…' : 'Heropenen'),
+        h('button', { class: 'knop', onclick: () => { rapportHeropenVraag = null; toon({ behoudScroll: true }); } }, 'Annuleren'))) : null;
+  return h('section', { class: 'ra-paneel', 'aria-label': 'Aandachtspunten en acties', onfocusout: (e) => { if (e.target && e.target.matches('textarea, input[type="text"]') && e.target.id !== 'ra-naam' && e.target.id !== 'ra-reden') bewaarWachtendNu(); } },
     h('div', { class: 'ra-kop' },
       h('h2', {}, 'Aandachtspunten en acties'),
       h('button', { class: 'ra-klein', id: 'ra-oorzaken', onclick: () => ga('#/oorzaken') }, 'Standaardacties beheren')),
-    h('p', { class: 'ra-stand', id: 'ra-stand' }, rapportStandTekst(c, k)),
+    // Zwevende balk: stand, automatisch bewaren, meldingen en de knoppen blijven bovenaan bij het scrollen.
+    h('div', { class: 'ra-vast', id: 'ra-vast' },
+      h('p', { class: 'ra-stand', id: 'ra-stand' }, rapportStandTekst(c, k)),
+      !bevestigd && kan ? h('p', { class: 'ra-auto', id: 'ra-auto', role: 'status', 'data-stand': '' }, rapportAutoTekst(sleutel, k)) : null,
+      mld ? h('div', { class: `melding ${mld.soort}`, id: 'rapport-melding', role: 'status' }, mld.tekst,
+        mld.verouderd ? h('button', { class: 'knop', id: 'ra-laatste', onclick: () => rapportLaatsteVersie(sleutel) }, 'Laatste versie') : null) : null,
+      knoppen,
+      heropenBlok),
     !kan ? h('p', { class: 'melding fout' }, 'Het script kent het bewerken van het rapport nog niet: zet script 2.9.0 online.') : null,
     kan && !online && !bevestigd ? h('p', { class: 'zacht' }, 'Zonder verbinding kun je het rapport bekijken, niet wijzigen.') : null,
     ih.aandachtspunten.map(puntBlok),
@@ -1953,24 +2090,6 @@ function rapportPaneel(sleutel, c, k, { online, kan }) {
     h('label', { class: 'ra-label', for: 'ra-naam' }, 'Naam (komt in de geschiedenis)'),
     h('input', { type: 'text', id: 'ra-naam', value: rapportNaam, maxlength: '60', 'data-invoer': 'ra-naam', placeholder: 'Je naam',
       oninput: (e) => { rapportNaam = e.target.value; db.zetInstelling('naam', rapportNaam).catch(() => {}); } }),
-    h('div', { class: 'ra-knoppen' },
-      !bevestigd ? h('button', { class: 'knop', id: 'ra-bewaar', 'data-kan': bewerk ? '1' : '0', disabled: !bewerk || !k.gewijzigd, onclick: () => rapportVerstuur(sleutel, 'rapportBewaar') }, rapportActie === 'rapportBewaar' ? 'Bewaren…' : 'Concept bewaren') : null,
-      !bevestigd ? h('button', { class: `knop hoofd${bevestigVraag ? ' gevaar' : ''}`, id: 'ra-bevestig', 'data-kan': bewerk ? '1' : '0', disabled: !bewerk,
-        onclick: () => {
-          if (!bevestigVraag) { rapportBevestigVraag = sleutel; toon({ behoudScroll: true }); setTimeout(() => { if (rapportBevestigVraag === sleutel) { rapportBevestigVraag = null; if (rapportHier(sleutel)) toon({ behoudScroll: true }); } }, 6000); return; }
-          rapportVerstuur(sleutel, 'rapportBevestig');
-        } }, rapportActie === 'rapportBevestig' ? 'Bevestigen…' : bevestigVraag ? 'Zeker? Cijfers worden vastgelegd. Tik nog eens' : 'Bevestigen') : null,
-      bevestigd && !heropenVraag ? h('button', { class: 'knop', id: 'ra-heropen', disabled: !online || !kan || !!rapportActie, onclick: () => { rapportHeropenVraag = sleutel; toon({ behoudScroll: true }); } }, 'Heropenen') : null),
-    bevestigd && heropenVraag ? h('div', { class: 'ra-heropen' },
-      h('label', { class: 'ra-label', for: 'ra-reden' }, 'Waarom heropenen? (verplicht, komt in de geschiedenis)'),
-      h('input', { type: 'text', id: 'ra-reden', maxlength: '200', 'data-invoer': 'ra-reden', value: rapportHeropenReden, oninput: (e) => { rapportHeropenReden = e.target.value; } }),
-      h('div', { class: 'ra-knoppen' },
-        h('button', { class: 'knop hoofd', id: 'ra-heropen-ok', disabled: !!rapportActie, onclick: () => {
-          if (!rapportHeropenReden.trim()) { rapportMelding = { sleutel, soort: 'fout', tekst: 'Geef een reden om te heropenen.' }; return toon({ behoudScroll: true }); }
-          const reden = rapportHeropenReden; rapportHeropenReden = '';
-          rapportVerstuur(sleutel, 'rapportHeropen', { reden });
-        } }, rapportActie === 'rapportHeropen' ? 'Heropenen…' : 'Heropenen'),
-        h('button', { class: 'knop', onclick: () => { rapportHeropenVraag = null; toon({ behoudScroll: true }); } }, 'Annuleren'))) : null,
     reg.geschiedenis && reg.geschiedenis.length ? h('details', { class: 'ra-geschiedenis' },
       h('summary', {}, `Geschiedenis (${reg.geschiedenis.length})`),
       h('ul', {}, reg.geschiedenis.map((g) => h('li', {}, `Versie ${g.versie}: ${g.status} · ${g.om ? dagEnUur(Date.parse(g.om)) : ''}${g.door ? ` · ${g.door}` : ''}${g.reden ? ` · heropend: ${g.reden}` : ''}`)))) : null);
@@ -2003,6 +2122,10 @@ async function schermRapport(gevraagd) {
     : bewaard ? `${c.bevroren ? 'Vastgelegde cijfers' : 'Cijfers'} van ${dagEnUur(c.bevroren && c.bevestigdOm ? Date.parse(c.bevestigdOm) : bewaard.opgehaaldOm)}${navigator.onLine ? '' : ' · geen verbinding'}`
     : navigator.onLine ? 'Nog geen cijfers opgehaald.' : 'Nog geen cijfers op dit toestel en geen verbinding.';
   if (bewaard) naToon = () => schaalRapport();
+  rapportHuidig = c ? { sleutel, c } : null;
+  // Wijzigingen die nog op dit toestel wachten (app gesloten, geen verbinding): vanzelf bewaren.
+  const auto = rapportAuto.get(sleutel) || {};
+  if (klad && klad.gewijzigd && reg && !bevestigd && navigator.onLine && !rapportAutoTimer && !auto.bezig && auto.conflict !== klad.basis) planAutoBewaar(sleutel, 500);
   return h('div', { class: 'rapport-scherm' },
     h('div', { class: 'rapport-bediening' },
       h('div', { class: 'groep' },
@@ -2023,11 +2146,10 @@ async function schermRapport(gevraagd) {
         h('button', { class: 'knop hoofd', id: 'rapport-druk', disabled: !kanAfdrukken, title: kanAfdrukken ? 'Afdrukken' : 'Eerst bevestigen', onclick: drukRapport }, 'Afdrukken'))),
     h('p', { class: 'rapport-stand', id: 'rapport-stand' }, stand),
     fout ? h('div', { class: 'melding fout', id: 'rapport-fout' }, `Ophalen mislukt: ${fout}${bewaard ? ' De vorige cijfers blijven getoond.' : ''}`) : null,
-    mld ? h('div', { class: `melding ${mld.soort}`, id: 'rapport-melding', role: 'status' }, mld.tekst,
-      mld.verouderd ? h('button', { class: 'knop', id: 'ra-laatste', onclick: () => rapportLaatsteVersie(sleutel) }, 'Laatste versie') : null) : null,
+    mld && !bewaard ? h('div', { class: `melding ${mld.soort}`, id: 'rapport-melding', role: 'status' }, mld.tekst) : null,
     rapportIntern ? h('p', { class: 'rapport-stand' }, 'Interne versie: met het raster per lijn. Niet bedoeld om aan de lijnen op te hangen.') : null,
     bewaard ? h('div', { class: 'rapport-werk' },
-      rapportPaneel(sleutel, c, klad, { online: navigator.onLine, kan: !!reg }),
+      rapportPaneel(sleutel, c, klad, { online: navigator.onLine, kan: !!reg, mld }),
       (() => {
         const houder = h('div', { class: 'blad-houder' }, h('div', { class: 'blad-schaal' }));
         houder.firstChild.innerHTML = rapportHtml(c, { intern: rapportIntern, opgehaaldOm: new Date(bewaard.opgehaaldOm).toISOString(), inhoud: klad && (klad.gewijzigd || !bevestigd) ? klad.inhoud : null });
@@ -2328,12 +2450,19 @@ async function start() {
     if (melding) { if (melding.over > 0) melding.over -= 1; else melding = null; }
     toon();
   });
-  window.addEventListener('online', () => { werkBalkBij(); sync.verwerk({ handmatig: true }); controleerCache(); });
+  window.addEventListener('online', () => {
+    werkBalkBij(); sync.verwerk({ handmatig: true }); controleerCache();
+    if (rapportHuidig && (rapportKlad.get(rapportHuidig.sleutel) || {}).gewijzigd) planAutoBewaar(rapportHuidig.sleutel, 500);
+  });
+  window.addEventListener('offline', () => { if (rapportHuidig) toonAutoStand(rapportHuidig.sleutel); });
+  // De hoogte van de balk bovenaan, voor wat eronder blijft kleven (de zwevende balk van het rapport).
+  const balk = document.getElementById('balk');
+  if (balk && 'ResizeObserver' in window) new ResizeObserver(() => document.documentElement.style.setProperty('--balk-h', `${balk.offsetHeight}px`)).observe(balk);
   window.addEventListener('offline', () => werkBalkBij());
   window.addEventListener('resize', () => { if (route()[0] === 'rapport') schaalRapport(); });
   // Ook bij Ctrl+P: het blad op één A4.
   window.addEventListener('beforeprint', () => { const blad = $scherm.querySelector('.blad'); if (blad) pasBladAan(blad); });
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { sync.verwerk(); zoekNieuweVersie(); } });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) bewaarWachtendNu(); else { sync.verwerk(); zoekNieuweVersie(); } });
   setInterval(() => sync.verwerk(), 60 * 1000);
 
   if ('BroadcastChannel' in window) {

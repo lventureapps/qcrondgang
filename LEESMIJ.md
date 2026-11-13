@@ -4,7 +4,7 @@ Webapp voor de dagelijkse kwaliteitsrondgang op een Android-tablet. Werkt zonder
 
 Gebouwd zijn fase 1 tot 3: de productiecontroles (Boven en Beneden, elk op één scherm), de twee foto's per controle, en de dagcontroles "Werkmaterialen boven" en "Magazijn en bufferzone". Fase 4, de overstap naar de echte sheet, is niet begonnen: alles hieronder gebeurt op de testkopie.
 
-Versies in deze map: script 2.9.0 (`apps-script/Code.gs`, `Rapport.gs` en `Iconen.gs` samen), app 1.13.1 (`docs/js/versie.js` en `docs/sw.js`).
+Versies in deze map: script 2.10.0 (`apps-script/Code.gs`, `Rapport.gs` en `Iconen.gs` samen), app 1.14.0 (`docs/js/versie.js` en `docs/sw.js`).
 
 Kolomletters in dit document zijn die van de testkopie op 5 oktober 2026, na het toevoegen van "THT ZK" (L) en "THT GRD" (AQ). Het script zoekt elke kolom op haar naam in rij 2, niet op haar letter: een kolom toevoegen of verplaatsen breekt niets, een kolom hernoemen wel.
 
@@ -23,7 +23,22 @@ Er staan geen sleutels, geen spreadsheet-ID's en geen klant- of productnamen in 
 
 De app staat op `https://lventureapps.github.io/qcrondgang/` (organisatie `lventureapps`, repository `qcrondgang`, Pages uit `/docs`). Palletscan blijft op `https://lventure.github.io/palletscan/`. Twee installeerbare apps op hetzelfde adres gaan op Android niet samen; daarom staan ze apart.
 
-## App 1.13.0 en script 2.9.0 (rapport nalezen, acties, bevestigen): wat je nu doet
+## App 1.14.0 en script 2.10.0 (automatisch bewaren, zwevende balk, paraaflijst): wat je nu doet
+
+Bovenop 1.13.x/2.9.0. Staat 2.9.0 nog niet online, doe dan eerst de stappen van 1.13.0 hieronder (met de bestanden van nu).
+
+Nieuw:
+- **Automatisch bewaren**: elke wijziging in het paneel wordt als concept bewaard, meteen bij het verlaten van een veld en anders 2,5 seconden na de laatste wijziging. Zonder verbinding blijft ze op het toestel en gaat ze mee zodra er verbinding is. De regel onder de stand zegt wat er gebeurt ("✓ Automatisch bewaard om 20:31", "Bewaren…", "Geen verbinding…"). De knop heet nu "Nu bewaren" en is alleen nodig na een fout.
+- **Zwevende balk**: stand, meldingen en de knoppen Bevestigen/Heropenen blijven bovenaan het paneel staan als je naar beneden scrolt.
+- **Paraaflijst**: nieuw tabblad **Paraaflijst** (kolom A: initialen, kolom B: opmerking die niet op het blad komt). De paraaftabel op het blad komt voortaan daaruit, niet meer uit de keuzelijst "Operator". Zo kan al het personeel erop zonder dat de keuzelijst bij Beneden langer wordt. `installeer` vult het tabblad de eerste keer met de keuzelijst "Operator"; daarna beheer je het in de sheet. Interim, Flexi en jobstudenten vallen altijd weg, dubbels ook. Een bevestigd rapport houdt de lijst van het moment van bevestigen.
+
+1. Script: vervang `Code.gs` en `Rapport.gs`. Bewaar. Kies `installeer` en Uitvoeren: het tabblad **Paraaflijst** komt erbij, gevuld met de operatoren.
+2. Vul in **Paraaflijst** het overige personeel aan (één persoon per rij, initialen in kolom A).
+3. Implementeren > Implementaties beheren > potlood > Nieuwe versie > Implementeren.
+4. GitHub (`docs`): `sw.js`, `css/rapport.css`, `js/app.js`, `js/rapport.js`, `js/versie.js`.
+5. Tablet en pc: **Bijwerken** (rechtsonder 1.14.0). Open het rapport, tik op **Vernieuwen**, pas een actie aan en klik ernaast: na een seconde staat er "✓ Automatisch bewaard om …".
+
+## App 1.13.0 en script 2.9.0 (rapport nalezen, acties, bevestigen)
 
 Bovenop 1.12.0/2.8.0 (zie hieronder; heb je die nog niet online gezet, doe dan alleen deze stappen: ze bevatten alles).
 

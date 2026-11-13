@@ -8,7 +8,7 @@ import { verwerk, SYNC_TAG } from './js/sync.js';
 // zelf moet wijzigen: verandert alleen een geïmporteerd bestand, dan mislukt
 // het bijwerken in Chrome ("ServiceWorker cannot be started") en blijft de
 // tablet op de oude versie hangen.
-const SW_VERSIE = '1.13.1';
+const SW_VERSIE = '1.14.0';
 
 const VOORVOEGSEL = 'qc-rondgang-';
 const CACHE = VOORVOEGSEL + SW_VERSIE;
