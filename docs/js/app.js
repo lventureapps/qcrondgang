@@ -1663,14 +1663,17 @@ async function schermOperatoren() {
   const items = (await db.alle('wachtrij')).filter((i) => i.soort === 'operatoren');
   const beheer = M.operatorBeheerMogelijk(snapshot);
   const lijst = M.operatorenActueel(snapshot, items);
-  const wacht = (naam, wat) => items.find((i) => i.wat === wat && i.naam.toLowerCase() === naam.toLowerCase());
+  const sheetLijst = M.operatorKeuzes(snapshot);
+  const inSheet = (naam) => sheetLijst.some((n) => n.toLowerCase() === naam.toLowerCase());
+  // Een "toevoegen" voor een naam die al in de sheet staat, is niets meer te doen: die rij toont de naam gewoon.
+  const wacht = (naam, wat) => items.find((i) => i.wat === wat && i.naam.toLowerCase() === naam.toLowerCase() && !(wat === 'toevoegen' && inSheet(naam)));
   const fout = await db.instelling('operatorenFout');
   const $naam = h('input', { class: 'invoer', id: 'operator-beheer-nieuw', 'data-invoer': 'operator-beheer-nieuw', type: 'text', maxlength: String(M.OPERATOR_MAX_TEKENS), autocomplete: 'off', autocapitalize: 'characters', placeholder: 'Initialen' });
   async function voegToe() {
     const naam = M.operatorNaam($naam.value);
     if (!naam) return;
     if (lijst.some((n) => n.toLowerCase() === naam.toLowerCase())) { zetMelding('info', `"${naam}" staat al in de lijst.`, 1); $naam.value = ''; return; }
-    await sync.operatorInWachtrij('toevoegen', naam);
+    await sync.operatorInWachtrij('toevoegen', naam, { inSheet: inSheet(naam) });
     operatorWeg = null;
     sync.verwerk();
     await toon({ behoudScroll: true });
@@ -1679,7 +1682,7 @@ async function schermOperatoren() {
     if (lijst.length <= 1) { zetMelding('fout', 'De laatste naam kan niet weg: de keuzelijst mag niet leeg worden.', 1); return; }
     if (operatorWeg !== naam) { operatorWeg = naam; return toon({ behoudScroll: true }); }
     operatorWeg = null;
-    await sync.operatorInWachtrij('verwijderen', naam);
+    await sync.operatorInWachtrij('verwijderen', naam, { inSheet: inSheet(naam) });
     sync.verwerk();
     await toon({ behoudScroll: true });
   }

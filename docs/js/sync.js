@@ -68,16 +68,21 @@ export async function dagUitWachtrij(dagId) {
  * vervalt (toevoegen na verwijderen = niets te doen, en omgekeerd).
  * Geeft terug of er een item in de wachtrij gekomen is.
  */
-export async function operatorInWachtrij(wat, naam) {
+export async function operatorInWachtrij(wat, naam, { inSheet } = {}) {
   const sleutel = naam.toLowerCase();
   const andere = wat === 'toevoegen' ? 'verwijderen' : 'toevoegen';
   const bestaand = (await db.alle('wachtrij')).filter((i) => i.soort === 'operatoren' && i.naam.toLowerCase() === sleutel);
   for (const i of bestaand) await db.wis('wachtrij', i.id);
-  const tegengesteld = bestaand.some((i) => i.wat === andere);
-  if (!tegengesteld) await db.zet('wachtrij', nieuwItem({ id: `operatoren:${wat}:${sleutel}`, soort: 'operatoren', wat, naam }));
+  // Weet de oproeper of de naam in de keuzelijst van de sheet staat, dan beslist
+  // dat: verwijderen van een naam die in de sheet staat, gaat altijd naar de
+  // sheet, ook als er nog een "toevoegen" voor wachtte (anders kwam ze terug).
+  const nodig = typeof inSheet === 'boolean'
+    ? (wat === 'verwijderen' ? inSheet : !inSheet)
+    : !bestaand.some((i) => i.wat === andere);
+  if (nodig) await db.zet('wachtrij', nieuwItem({ id: `operatoren:${wat}:${sleutel}`, soort: 'operatoren', wat, naam }));
   meld('wachtrij');
-  if (!tegengesteld) vraagAchtergrondSync();
-  return !tegengesteld;
+  if (nodig) vraagAchtergrondSync();
+  return nodig;
 }
 
 export async function operatorUitWachtrij(item) {
