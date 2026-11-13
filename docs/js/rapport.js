@@ -182,16 +182,62 @@ function perLijn(c) {
 function kaart(t) {
   if (!t) return '<div class="r-kaart r-kaart-leeg">' + statusIcoon('goed', 'st mini') + ' Geen verder aandachtspunt</div>';
   const s = STATUS[t.status];
-  const actie = t.actie || t.standaardactie;
   const oorzaak = t.oorzaak && t.oorzaak !== 'Geen opmerking' && t.oorzaak !== 'Niet gecodeerd'
     ? `${esc(t.oorzaak)} <span class="zacht">(${t.oorzaakAantal} van ${t.oorzaakVan})</span>`
     : '<span class="zacht">oorzaak niet genoteerd</span>';
+  const acties = t.acties && t.acties.length
+    ? (t.acties.length === 1 ? `<span>${esc(t.acties[0])}</span>` : `<ul class="r-acties">${t.acties.map((a) => `<li>${esc(a)}</li>`).join('')}</ul>`)
+    : '<span class="zacht">actie te bepalen</span>';
   return `<div class="r-kaart" style="border-top-color:${s.kleur}" data-punt="${esc(t.id)}">
     <div class="r-kaart-kop">${icoon(t.icoon, 'ico groot')}<div><strong>${esc(t.naam)}</strong><span style="color:${s.tekst}"><b>${getal(t.nietOk)}×</b> niet OK · ${pct(t.pct)}</span></div></div>
     <div class="r-regel"><span class="r-label">Oorzaak</span><span>${oorzaak}</span></div>
-    <div class="r-regel r-actie"><span class="r-label blauw">Actie</span><span>${actie ? esc(actie) : '<span class="zacht">actie te bepalen</span>'}</span></div>
+    <div class="r-regel r-actie"><span class="r-label blauw">Actie</span>${acties}</div>
+    ${t.notitie ? `<div class="r-notitie">${esc(t.notitie)}</div>` : ''}
     <div class="r-opvolging">${icoon('actielijst', 'ico mini')} opvolging: zie actielijst</div>
   </div>`;
+}
+
+/** Hoeveel aandachtspunten en acties per punt er op het blad passen. */
+export const MAX_OP_BLAD = 3;
+export const MAX_ACTIES_OP_BLAD = 3;
+
+/**
+ * Het voorstel voor een rapport dat nog niet bewaard is: de drie punten met de
+ * meeste niet-OK's, elk met de standaardacties van zijn oorzaken (meest
+ * getelde eerst). Alleen de actie van de belangrijkste oorzaak staat aangevinkt.
+ */
+export function standaardInhoud(c) {
+  const per = c.oorzakenPerPunt || {};
+  return {
+    toelichting: c.toelichting || '',
+    aandachtspunten: (c.top || []).map((t) => ({ id: t.id, opBlad: true, notitie: '', acties: voorgesteldeActies(c, t.id, per) }))
+  };
+}
+
+/** De standaardacties van een punt, meest getelde oorzaak eerst; de belangrijkste aangevinkt. */
+export function voorgesteldeActies(c, id, per = c.oorzakenPerPunt || {}) {
+  const k = (c.kandidaten || c.top || []).find((x) => x.id === id) || {};
+  const telling = k.oorzaken || {};
+  return (per[id] || [])
+    .filter((o) => o.actie)
+    .map((o) => ({ o, n: telling[o.code] || 0 }))
+    .sort((a, b) => b.n - a.n)
+    .map(({ o }) => ({ tekst: o.actie, opBlad: !!k.oorzaak && o.code === k.oorzaak, bron: 'standaard', code: o.code }));
+}
+
+/** De kaarten zoals ze op het blad komen, uit de inhoud (of het voorstel). */
+function kaartenVan(c, inhoud) {
+  return (inhoud.aandachtspunten || []).filter((a) => a.opBlad).slice(0, MAX_OP_BLAD).map((a) => {
+    const p = (c.punten || []).find((x) => x.id === a.id);
+    if (!p) return null;
+    const k = (c.kandidaten || c.top || []).find((x) => x.id === a.id) || {};
+    return {
+      id: p.id, naam: p.naam, icoon: p.icoon, nietOk: p.nietOk, pct: p.pct, status: p.status,
+      oorzaak: k.oorzaak || '', oorzaakAantal: k.oorzaakAantal || 0, oorzaakVan: k.oorzaakVan || p.nietOk,
+      acties: (a.acties || []).filter((x) => x.opBlad && x.tekst).slice(0, MAX_ACTIES_OP_BLAD).map((x) => x.tekst),
+      notitie: a.notitie || ''
+    };
+  }).filter(Boolean);
 }
 
 function trend(c) {
@@ -206,21 +252,72 @@ function trend(c) {
   return `<div class="r-trend"><div class="r-trend-kop">Trend totaal niet OK</div><div class="r-staven">${staven}</div><div class="r-trend-voet">stippellijn = doel ${drempel(c.drempels.totaal[0])}</div></div>`;
 }
 
+
+/** Rode balk bovenaan als er STOP's waren: de ernstigste uitkomst van een controle. */
+const STOP_MAX_REGELS = 4;
+function stopBalk(c, intern) {
+  const n = c.stop || 0;
+  if (!n) return '';
+  const lijst = c.stops || [];
+  const periode = c.periode === 'jaar' ? 'dit jaar' : 'deze maand';
+  const regels = lijst.slice(0, STOP_MAX_REGELS).map((x) => {
+    const opm = x.opmerking ? (x.opmerking.length > 110 ? `${x.opmerking.slice(0, 107)}…` : x.opmerking) : '';
+    return `<li><span class="r-stop-dag">${esc(x.dag)}</span>${icoon(x.icoon, 'ico mini')}<b>${esc(x.punt)}</b>${intern && x.lijn ? ` · ${esc(x.lijn)}` : ''}${intern && x.code ? ` · ${esc(x.code)}` : ''}${opm ? ` <span class="r-stop-opm">– ${esc(opm)}</span>` : ''}</li>`;
+  }).join('');
+  const meer = lijst.length > STOP_MAX_REGELS ? `<li class="r-stop-meer">en nog ${lijst.length - STOP_MAX_REGELS} STOP${lijst.length - STOP_MAX_REGELS > 1 ? "'s" : ''}${intern ? '' : ' (zie de interne versie)'}</li>` : '';
+  return `<section class="r-stop" role="alert">
+    <div class="r-stop-kop">${icoon('stop', 'ico r-stop-ico')}<div><strong>${n}× STOP ${periode}</strong><span>productie stilgelegd na de controle · de ernstigste uitkomst</span></div></div>
+    ${regels || meer ? `<ul>${regels}${meer}</ul>` : ''}
+  </section>`;
+}
+
+/** Paraaftabel: per vakje de initialen van een operator, links, met ruimte voor een paraaf. */
+const PARAAF_KOLOMMEN = 11;
+function paraafTabel(c) {
+  const namen = (c.operatoren || [])
+    .map((x) => String(x).trim())
+    .filter((x) => x && !/interim|flexi|student/i.test(x))
+    .sort((a, b) => a.localeCompare(b, 'nl', { sensitivity: 'base' }));
+  if (!namen.length) return '';
+  const rijen = [];
+  for (let i = 0; i < namen.length; i += PARAAF_KOLOMMEN) {
+    const stuk = namen.slice(i, i + PARAAF_KOLOMMEN);
+    while (stuk.length < PARAAF_KOLOMMEN) stuk.push('');
+    rijen.push(`<tr>${stuk.map((x) => `<td>${x ? `<span>${esc(x)}</span>` : ''}</td>`).join('')}</tr>`);
+  }
+  return `<section class="r-blok r-paraaf">
+    <h2>Gelezen en besproken <span>· paraaf naast je initialen</span></h2>
+    <table class="r-paraaf-tabel"><tbody>${rijen.join('')}</tbody></table>
+  </section>`;
+}
+
 /* ------------------------------------------------------------------ */
 /* Het blad                                                            */
 /* ------------------------------------------------------------------ */
 
 /**
- * opties: { intern: bool, opgehaaldOm: ISO-tijd van de cijfers }.
- * De productieversie toont geen lijnen (beslissing 10 november 2026).
+ * opties: { intern: bool, opgehaaldOm: ISO-tijd van de cijfers, inhoud: de
+ * aandachtspunten en acties zoals ze in de app bewerkt worden (anders die van
+ * het register, anders het voorstel) }. Een blad dat niet bevestigd is (of met
+ * niet-bewaarde wijzigingen) draagt de stempel CONCEPT.
+ * De productieversie toont geen lijnen (beslissing 10 november 2026) en heeft
+ * onderaan de paraaftabel van de operatoren; de interne versie toont bij een
+ * STOP ook lijn en code. Een STOP staat altijd in een rode balk onder de kop.
  */
-export function rapportHtml(c, { intern = false, opgehaaldOm = null } = {}) {
-  const top = [0, 1, 2].map((i) => c.top[i] || null);
+export function rapportHtml(c, { intern = false, opgehaaldOm = null, inhoud = null } = {}) {
+  const ih = inhoud || (c.register && c.register.inhoud) || standaardInhoud(c);
+  const kaarten = kaartenVan(c, ih);
+  const top = [0, 1, 2].map((i) => kaarten[i] || null);
+  const reg = c.register || null;
+  const bevestigd = !!(reg && reg.status === 'bevestigd' && !inhoud);
+  const stand = bevestigd
+    ? `<b>Bevestigd</b>${reg.versie > 1 ? ` · versie ${reg.versie}` : ''} · ${esc(datumUur(reg.om))}${reg.door ? ` · ${esc(reg.door)}` : ''}`
+    : '<b class="r-concept-tekst">CONCEPT · nog niet bevestigd</b>';
   const voet = `<footer class="r-voet">
     <span>Automatisch uit de QC-rondgang · % = (niet OK + STOP) / beoordeelde punten, NVT telt niet mee · opvolging van acties in de actielijst</span>
-    <span>${intern ? '<b>Interne versie</b> · ' : ''}cijfers van ${esc(datumUur(opgehaaldOm || c.gemaaktOm))}</span>
+    <span>${intern ? '<b>Interne versie</b> · ' : ''}${stand} · cijfers van ${esc(datumUur(bevestigd ? (c.bevestigdOm || reg.om) : (opgehaaldOm || c.gemaaktOm)))}</span>
   </footer>`;
-  const toelichting = c.toelichting ? `<p class="r-toelichting">${esc(c.toelichting)}</p>` : '';
+  const toelichting = ih.toelichting ? `<p class="r-toelichting">${esc(ih.toelichting)}</p>` : '';
   const waarschuwing = c.waarschuwingen && c.waarschuwingen.length ? `<p class="r-waarschuwing">${esc(c.waarschuwingen.join(' · '))}</p>` : '';
   const titelAandacht = `<h2>Aandachtspunten ${c.periode === 'jaar' ? 'dit jaar' : 'deze maand'} → actie</h2>`;
   let midden;
@@ -230,11 +327,14 @@ export function rapportHtml(c, { intern = false, opgehaaldOm = null } = {}) {
   } else {
     midden = `<div class="r-twee">${perPunt(c)}<section class="r-blok r-rechts">${titelAandacht}<div class="r-kaarten kolom">${top.map(kaart).join('')}</div>${trend(c)}</section></div>`;
   }
-  return `<article class="blad${intern ? ' intern' : ''}" data-periode="${esc(c.maand)}" data-versie="${intern ? 'intern' : 'productie'}">
+  return `<article class="blad${intern ? ' intern' : ''}${bevestigd ? ' bevestigd' : ' concept'}" data-periode="${esc(c.maand)}" data-versie="${intern ? 'intern' : 'productie'}">
+    ${bevestigd ? '' : '<div class="r-stempel" aria-hidden="true">CONCEPT</div>'}
     <div class="blad-inhoud">
       ${kop(c, intern)}
+      ${stopBalk(c, intern)}
       ${midden}
       ${toelichting}
+      ${intern ? '' : paraafTabel(c)}
       ${waarschuwing}
       ${voet}
     </div>

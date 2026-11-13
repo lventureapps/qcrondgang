@@ -16,6 +16,48 @@
 .blad-houder { overflow: hidden; display: flex; justify-content: center; }
 .blad-schaal { transform-origin: top left; }
 
+/* paneel met aandachtspunten en acties naast het blad */
+.rapport-werk { display: grid; grid-template-columns: minmax(330px, 440px) minmax(0, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 1100px) { .rapport-werk { grid-template-columns: minmax(0, 1fr); } }
+.ra-paneel { background: var(--kaart); border: 1px solid var(--lijn); border-radius: var(--straal); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.ra-kop { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ra-kop h2 { margin: 0; font-size: 1.1rem; }
+.ra-stand { margin: 0; font-size: .9rem; }
+.ra-punt { border: 1px solid var(--lijn); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; background: #fff; }
+.ra-punt.uit { opacity: .6; }
+.ra-punt-kop { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ra-punt-kop .zacht { font-size: .85rem; }
+.ra-vink { display: flex; align-items: center; gap: 8px; font-size: 1rem; }
+.ra-vink input, .ra-acties input[type=checkbox] { width: 24px; height: 24px; flex: none; }
+.ra-oorzaken { font-size: .82rem; }
+.ra-acties { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ra-acties li { display: flex; gap: 6px; align-items: center; }
+.ra-acties textarea, .ra-notitie, .ra-paneel textarea, #ra-naam, #ra-reden, .oz-tabel input { flex: 1 1 auto; min-width: 0; min-height: 40px; padding: 6px 8px; border: 1px solid var(--lijn); border-radius: 8px; font: inherit; font-size: .92rem; background: #fff; }
+.ra-paneel textarea { min-height: 56px; resize: vertical; }
+.ra-acties textarea { min-height: 52px; }
+.ra-code { font-size: .7rem; color: var(--zacht); border: 1px solid var(--lijn); border-radius: 6px; padding: 1px 5px; white-space: nowrap; }
+.ra-toevoegen { display: flex; gap: 6px; flex-wrap: wrap; }
+.ra-toevoegen select, #ra-punt-erbij { min-height: 40px; max-width: 100%; border: 1px solid var(--lijn); border-radius: 8px; font: inherit; font-size: .9rem; background: #fff; padding: 4px 6px; }
+.ra-klein { min-height: 36px; padding: 4px 10px; border: 1px solid var(--lijn); border-radius: 8px; background: #fff; font: inherit; font-size: .88rem; font-weight: 600; cursor: pointer; }
+.ra-label { font-size: .85rem; color: var(--zacht); margin-bottom: -6px; }
+.ra-waarschuwing { margin: 0; color: var(--nok); font-weight: 600; font-size: .9rem; }
+.ra-waarschuwing:empty { display: none; }
+.ra-knoppen { display: flex; gap: 8px; flex-wrap: wrap; }
+.ra-knoppen .knop { width: auto; flex: 1 1 auto; min-height: 48px; }
+.knop.gevaar { background: var(--nok); border-color: var(--nok); color: #fff; }
+.ra-heropen { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--lijn); padding-top: 8px; }
+.ra-geschiedenis { font-size: .85rem; }
+.ra-geschiedenis ul { margin: 6px 0 0; padding-left: 18px; }
+.oz-scherm { display: flex; flex-direction: column; gap: 12px; max-width: 1100px; margin: 0 auto; }
+.oz-groep { background: var(--kaart); border: 1px solid var(--lijn); border-radius: var(--straal); padding: 10px 12px; }
+.oz-groep h3 { margin: 0 0 6px; font-size: 1rem; }
+.oz-tabel { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.oz-tabel th { text-align: left; font-size: .8rem; color: var(--zacht); font-weight: 600; padding: 2px 4px; }
+.oz-tabel th:nth-child(1) { width: 26%; } .oz-tabel th:nth-child(3) { width: 24%; } .oz-tabel th:nth-child(4) { width: 44px; }
+.oz-tabel td { padding: 3px 4px; }
+.oz-tabel input { width: 100%; }
+.oz-onder { position: sticky; bottom: 0; background: var(--vlak); padding: 8px 0; }
+
 /* ---------- het blad ---------- */
 .blad {
   --r-inkt: #1b1b19; --r-zacht: #5c5c56; --r-lijn: #e3e2dc; --r-vlak: #f4f3ef; --r-blauw: #184f95;
@@ -56,6 +98,23 @@
 .r-totaal-kop { font-size: 7.2pt; text-transform: uppercase; letter-spacing: .05em; color: var(--r-zacht); }
 .r-totaal-waarde { font-size: 28pt; font-weight: 700; line-height: 1.05; white-space: nowrap; }
 .r-totaal-sub { font-size: 7.4pt; color: var(--r-zacht); }
+
+/* STOP: rode balk onder de kop */
+.r-stop { background: #fdecec; border: .5mm solid #d03b3b; border-left: 3mm solid #c02a2a; border-radius: 2.5mm; padding: 2.4mm 3.4mm; color: #5a1010; }
+.r-stop-kop { display: flex; gap: 2.6mm; align-items: center; }
+.blad .r-stop-ico { width: 9mm; height: 9mm; }
+.r-stop-kop strong { display: block; font-size: 14pt; line-height: 1.1; color: #b42323; letter-spacing: .01em; }
+.r-stop-kop span { font-size: 8.4pt; color: #6b2a2a; }
+.r-stop ul { list-style: none; margin: 1.8mm 0 0; padding: 0; display: flex; flex-direction: column; gap: .8mm; }
+.r-stop li { font-size: 8.6pt; line-height: 1.3; }
+.r-stop-dag { display: inline-block; min-width: 19mm; font-weight: 600; color: #5a1010; }
+.r-stop-opm { color: #4a2a2a; }
+.r-stop-meer { color: #6b2a2a; font-style: italic; }
+
+/* paraaftabel van de operatoren (versie voor productie) */
+.r-paraaf-tabel { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.r-paraaf-tabel td { border: .3mm solid #8a8a83; height: 8mm; vertical-align: top; padding: .8mm 1.2mm; }
+.r-paraaf-tabel td span { font-size: 8.2pt; font-weight: 700; }
 
 /* twee kolommen */
 .r-twee { display: grid; grid-template-columns: 1fr 1fr; gap: 6mm; align-items: start; }
@@ -108,6 +167,8 @@
 .r-label { flex: none; font-size: 6.2pt; text-transform: uppercase; letter-spacing: .05em; color: #fff; background: #77776f; border-radius: .8mm; padding: .3mm 1.2mm; }
 .r-label.blauw { background: var(--r-blauw); }
 .r-actie { font-weight: 600; }
+.r-acties { margin: 0; padding-left: 3.6mm; display: flex; flex-direction: column; gap: .6mm; }
+.r-notitie { font-size: 7.6pt; font-style: italic; color: #4a4a44; }
 .r-opvolging { font-size: 7pt; color: var(--r-zacht); margin-top: auto; }
 
 /* trend */
@@ -126,13 +187,17 @@
 
 .r-toelichting { font-size: 9pt; padding: 2mm 3mm; border-left: 1.2mm solid var(--r-blauw); background: var(--r-vlak); border-radius: 0 1.5mm 1.5mm 0; }
 .r-waarschuwing { font-size: 7pt; color: #b42323; }
+.blad { position: relative; }
+.r-stempel { position: absolute; top: 120mm; left: 0; right: 0; text-align: center; font-size: 82pt; font-weight: 700; letter-spacing: .12em; color: rgba(208, 59, 59, .10); transform: rotate(-28deg); pointer-events: none; z-index: 2; }
+.r-concept-tekst { color: #b42323; }
 .r-voet { margin-top: auto; display: flex; justify-content: space-between; gap: 4mm; font-size: 6.6pt; color: #8a8a83; border-top: 1px solid var(--r-lijn); padding-top: 1.4mm; }
 
 /* ---------- afdrukken: alleen het blad ---------- */
 @media print {
   @page { size: A4 portrait; margin: 0; }
   html, body { background: #fff !important; margin: 0 !important; padding: 0 !important; }
-  body.rapport-druk #balk, body.rapport-druk .rapport-bediening, body.rapport-druk #scherm > .melding, body.rapport-druk .rapport-stand { display: none !important; }
+  body.rapport-druk #balk, body.rapport-druk .rapport-bediening, body.rapport-druk #scherm > .melding, body.rapport-druk .rapport-stand, body.rapport-druk .ra-paneel, body.rapport-druk .rapport-scherm > .melding { display: none !important; }
+  body.rapport-druk .rapport-werk { display: block; }
   body.rapport-druk #scherm { max-width: none !important; margin: 0 !important; padding: 0 !important; }
   body.rapport-druk .rapport-scherm { display: block; }
   body.rapport-druk .blad-houder { display: block; overflow: visible; height: auto !important; }

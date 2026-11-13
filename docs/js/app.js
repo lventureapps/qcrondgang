@@ -4,7 +4,7 @@ import { roep } from './api.js';
 import * as sync from './sync.js';
 import * as M from './model.js';
 import { APP_VERSIE } from './versie.js';
-import { rapportHtml, pasBladAan, maandenVanaf, periodeNaam } from './rapport.js';
+import { rapportHtml, pasBladAan, maandenVanaf, periodeNaam, standaardInhoud, voorgesteldeActies, MAX_OP_BLAD, MAX_ACTIES_OP_BLAD } from './rapport.js';
 
 const $balk = document.getElementById('balk');
 const $scherm = document.getElementById('scherm');
@@ -44,6 +44,15 @@ let rapportIntern = false;              // interne versie (met lijnen) of de ver
 const rapportBezig = new Set();         // sleutels ('2026-10', '2026') die nu opgehaald worden
 const rapportGeprobeerd = new Set();    // dit bezoek al vanzelf opgehaald (geen lus bij een fout)
 let rapportFout = null;                 // { sleutel, tekst }
+const rapportKlad = new Map();          // sleutel -> { basis, gewijzigd, inhoud }: aanpassingen tot ze bewaard zijn
+let rapportKladTimer = null;
+let rapportMelding = null;              // { sleutel, soort, tekst, verouderd }
+let rapportActie = null;                // 'rapportBewaar' | 'rapportBevestig' | 'rapportHeropen' terwijl het script werkt
+let rapportBevestigVraag = null;        // sleutel waarvoor "Bevestigen" één keer getikt is
+let rapportHeropenVraag = null;         // sleutel waarvoor de reden gevraagd wordt
+let rapportHeropenReden = '';
+let rapportNaam = '';                   // naam op dit toestel, voor de geschiedenis
+let oorzakenStaat = { bezig: false, fout: null, lijst: null };
 
 /* ------------------------------------------------------------------ */
 /* Hulpfuncties                                                        */
@@ -178,6 +187,7 @@ function terug() {
   if (r[0] === 'c') { rbToon = r[1]; return ga('#/controles'); }
   if (r[0] === 'dag' && Number(r[3]) > 0) return ga(`#/dag/${r[1]}/${r[2]}/${Number(r[3]) - 1}`);
   if (r[0] === 'operatoren') return ga('#/instellingen');
+  if (r[0] === 'oorzaken') return ga('#/rapport');
   return ga('#/');
 }
 
@@ -206,6 +216,7 @@ async function toon({ behoudScroll = false, achtergrond = false } = {}) {
     else if (r[0] === 'einde') inhoud = await schermEinde();
     else if (r[0] === 'operatoren') inhoud = await schermOperatoren();
     else if (r[0] === 'rapport') inhoud = await schermRapport(r[1]);
+    else if (r[0] === 'oorzaken') inhoud = await schermOorzaken();
     else if (r[0] === 'c') inhoud = await schermControle(r[1], r[2], r[3]);
     else if (r[0] === 'dag' && M.DAGSOORTEN.includes(r[1])) inhoud = await schermDag(r[1], r[2], Number(r[3]) || 0);
     else inhoud = [h('p', {}, 'Onbekend scherm.')];
@@ -227,7 +238,7 @@ async function toon({ behoudScroll = false, achtergrond = false } = {}) {
   const veld = actief && $scherm.contains(actief) ? actief.getAttribute('data-invoer') || (actief.id === 'zoek' ? '#zoek' : null) : null;
   const getypt = veld ? actief.value : null;
   $scherm.replaceChildren(...[kop, inhoud].flat(Infinity).filter(Boolean));
-  $scherm.classList.toggle('breed', !!$scherm.querySelector('.deel-raster, .dag-raster, .rondgang'));
+  $scherm.classList.toggle('breed', !!$scherm.querySelector('.deel-raster, .dag-raster, .rondgang, .rapport-werk, .oz-scherm'));
   document.body.classList.toggle('rapport-druk', r[0] === 'rapport');
   vorigeUrls.forEach((u) => URL.revokeObjectURL(u));
   if (veld) {
@@ -1720,23 +1731,23 @@ function rapportStandaard() {
 }
 
 const isRapportSleutel = (s) => /^\d{4}(-\d{2})?$/.test(String(s || ''));
+const rapportHier = (sleutel) => route()[0] === 'rapport' && (isRapportSleutel(route()[1]) ? route()[1] : rapportStandaard()) === sleutel;
 
-/** Haalt de cijfers bij het script en bewaart ze op het toestel (ook om zonder verbinding te bekijken). */
+/** Haalt de cijfers (en de stand van het register) bij het script en bewaart ze op het toestel. */
 async function haalRapport(sleutel) {
   if (rapportBezig.has(sleutel)) return;
   rapportBezig.add(sleutel);
   if (rapportFout && rapportFout.sleutel === sleutel) rapportFout = null;
-  const hier = () => route()[0] === 'rapport' && (isRapportSleutel(route()[1]) ? route()[1] : rapportStandaard()) === sleutel;
-  if (hier()) toon({ behoudScroll: true, achtergrond: true });
+  if (rapportHier(sleutel)) toon({ behoudScroll: true, achtergrond: true });
   try {
     const c = await roep('rapport', /^\d{4}$/.test(sleutel) ? { jaar: sleutel } : { maand: sleutel }, { timeout: SNAPSHOT_WACHT_MS });
     await db.zet('referentie', { opgehaaldOm: Date.now(), cijfers: c }, `rapport:${sleutel}`);
   } catch (e) {
-    const oud = e.code === 'ACTIE' ? ' Het script kent het rapport nog niet: zet script 2.8.0 online.' : '';
+    const oud = e.code === 'ACTIE' ? ' Het script kent het rapport nog niet: zet script 2.9.0 online.' : '';
     rapportFout = { sleutel, tekst: `${e.message}${oud}` };
   } finally {
     rapportBezig.delete(sleutel);
-    if (hier()) toon({ behoudScroll: true, achtergrond: true });
+    if (rapportHier(sleutel)) toon({ behoudScroll: true, achtergrond: true });
   }
 }
 
@@ -1763,6 +1774,208 @@ async function drukRapport() {
   window.print();
 }
 
+/* ---- het klad: wat in de app aangepast wordt, tot het bewaard is ---- */
+
+/** Het klad van een periode: uit het geheugen, van het toestel (na herladen), of nieuw. */
+async function rapportKladVan(sleutel, c) {
+  const basis = (c.register && c.register.om) || '';
+  let k = rapportKlad.get(sleutel);
+  if (!k) {
+    const bewaard = await db.haal('referentie', `rapportklad:${sleutel}`);
+    if (bewaard && bewaard.basis === basis) k = bewaard;
+    else if (bewaard) {
+      await db.wis('referentie', `rapportklad:${sleutel}`);
+      rapportMelding = { sleutel, soort: 'fout', tekst: 'Niet-bewaarde wijzigingen op dit toestel waren van een oudere versie van het rapport en zijn vervallen.' };
+    }
+  }
+  // Een klad zonder wijzigingen volgt altijd de laatste cijfers en standaardacties;
+  // een gewijzigd klad van een oudere versie vervalt (bij bewaren zou het geweigerd worden).
+  if (k && (!k.gewijzigd || k.basis !== basis)) k = null;
+  if (!k) {
+    k = { basis, gewijzigd: false, inhoud: JSON.parse(JSON.stringify((c.register && c.register.inhoud) || standaardInhoud(c))) };
+  }
+  rapportKlad.set(sleutel, k);
+  return k;
+}
+
+/** Na elke wijziging: klad bewaren op het toestel en het blad opnieuw tekenen (zonder de invoer te storen). */
+function rapportGewijzigd(sleutel, c, { herteken = false } = {}) {
+  const k = rapportKlad.get(sleutel);
+  if (!k) return;
+  k.gewijzigd = true;
+  clearTimeout(rapportKladTimer);
+  rapportKladTimer = setTimeout(() => { db.zet('referentie', k, `rapportklad:${sleutel}`).catch(() => {}); }, 300);
+  if (herteken) { toon({ behoudScroll: true }); return; }
+  const schaal = $scherm.querySelector('.blad-schaal');
+  if (schaal) {
+    schaal.innerHTML = rapportHtml(c, { intern: rapportIntern, inhoud: k.inhoud, opgehaaldOm: c.gemaaktOm });
+    schaalRapport();
+  }
+  const st = $scherm.querySelector('#ra-stand');
+  if (st) st.textContent = rapportStandTekst(c, k);
+  ['#ra-bewaar', '#ra-bevestig'].forEach((id) => { const b = $scherm.querySelector(id); if (b && b.dataset.kan === '1') b.disabled = false; });
+  const druk = $scherm.querySelector('#rapport-druk');
+  if (druk) druk.disabled = true;
+  const w = $scherm.querySelector('#ra-waarschuwing');
+  if (w) w.textContent = rapportWaarschuwing(k.inhoud);
+}
+
+function rapportStandTekst(c, k) {
+  const r = c.register || { status: 'voorstel', versie: 0 };
+  if (r.status === 'bevestigd') return `Bevestigd${r.versie > 1 ? ` (versie ${r.versie})` : ''} op ${dagEnUur(Date.parse(r.om))}${r.door ? ` door ${r.door}` : ''}. Afdrukken kan. Wijzigen kan na heropenen.`;
+  const basis = r.status === 'concept' ? `Concept${r.versie > 1 ? ` (versie ${r.versie}, heropend${r.reden ? `: ${r.reden}` : ''})` : ''}, bewaard ${dagEnUur(Date.parse(r.om))}${r.door ? ` door ${r.door}` : ''}` : 'Voorstel, nog niet bewaard';
+  return `${basis}${k && k.gewijzigd ? ' · niet-bewaarde wijzigingen' : ''}. Bevestig om af te drukken.`;
+}
+
+function rapportWaarschuwing(inhoud) {
+  const op = inhoud.aandachtspunten.filter((a) => a.opBlad);
+  const fouten = [];
+  if (op.length > MAX_OP_BLAD) fouten.push(`Er passen ${MAX_OP_BLAD} aandachtspunten op het blad; ${op.length - MAX_OP_BLAD} vallen weg. Vink er af.`);
+  op.forEach((a) => {
+    const n = a.acties.filter((x) => x.opBlad && x.tekst).length;
+    if (n > MAX_ACTIES_OP_BLAD) fouten.push(`${puntNaam(a.id)}: hoogstens ${MAX_ACTIES_OP_BLAD} acties op het blad.`);
+  });
+  return fouten.join(' ');
+}
+
+let rapportPuntNamen = {};
+const puntNaam = (id) => rapportPuntNamen[id] || id;
+
+async function rapportVerstuur(sleutel, soort, extra = {}) {
+  const bewaard = await db.haal('referentie', `rapport:${sleutel}`);
+  if (!bewaard) return;
+  const c = bewaard.cijfers;
+  const k = rapportKlad.get(sleutel);
+  const naam = (rapportNaam || '').trim();
+  if ((soort === 'rapportBevestig' || soort === 'rapportHeropen') && !naam) {
+    rapportBevestigVraag = null;
+    rapportMelding = { sleutel, soort: 'fout', tekst: 'Vul eerst je naam in (bij "Naam").' };
+    return toon({ behoudScroll: true });
+  }
+  rapportActie = soort;
+  rapportMelding = null;
+  toon({ behoudScroll: true });
+  try {
+    const data = { periode: sleutel, basis: (c.register && c.register.om) || '', door: naam, ...extra };
+    if (soort !== 'rapportHeropen') data.inhoud = k ? k.inhoud : standaardInhoud(c);
+    const r = await roep(soort, data, { timeout: SNAPSHOT_WACHT_MS });
+    rapportKlad.delete(sleutel);
+    await db.wis('referentie', `rapportklad:${sleutel}`);
+    if (soort === 'rapportBevestig') {
+      await db.zet('referentie', { opgehaaldOm: Date.now(), cijfers: r }, `rapport:${sleutel}`);
+      rapportMelding = { sleutel, soort: 'ok', tekst: 'Bevestigd. Het rapport kan nu afgedrukt worden; de cijfers liggen vast.' };
+    } else {
+      bewaard.cijfers.register = r.register;
+      await db.zet('referentie', bewaard, `rapport:${sleutel}`);
+      rapportMelding = { sleutel, soort: 'ok', tekst: soort === 'rapportHeropen' ? `Heropend als versie ${r.register.versie}. De cijfers worden opnieuw opgehaald.` : 'Concept bewaard.' };
+      if (soort === 'rapportHeropen') { rapportHeropenVraag = null; setTimeout(() => haalRapport(sleutel), 0); }
+    }
+  } catch (e) {
+    const verouderd = e.code === 'GEWIJZIGD' || e.code === 'BEVESTIGD';
+    rapportMelding = { sleutel, soort: 'fout', tekst: `${e.message}${verouderd ? ' Tik op "Laatste versie" om ze te laden (je wijzigingen hier vervallen dan).' : ''}`, verouderd };
+  } finally {
+    rapportActie = null;
+    rapportBevestigVraag = null;
+    if (rapportHier(sleutel)) toon({ behoudScroll: true });
+  }
+}
+
+async function rapportLaatsteVersie(sleutel) {
+  rapportKlad.delete(sleutel);
+  await db.wis('referentie', `rapportklad:${sleutel}`);
+  rapportMelding = null;
+  haalRapport(sleutel);
+}
+
+/** Het paneel met de aandachtspunten, acties, notities en de knoppen bewaren, bevestigen, heropenen. */
+function rapportPaneel(sleutel, c, k, { online, kan }) {
+  const reg = c.register || { status: 'voorstel', versie: 0, geschiedenis: [] };
+  const bevestigd = reg.status === 'bevestigd';
+  const bewerk = kan && online && !bevestigd && !rapportActie;
+  const ih = k.inhoud;
+  const gewijzigd = () => rapportGewijzigd(sleutel, c);
+  const herteken = () => rapportGewijzigd(sleutel, c, { herteken: true });
+  const kandidaten = c.kandidaten || c.top || [];
+  rapportPuntNamen = Object.fromEntries((c.punten || []).map((p) => [p.id, p.naam]));
+
+  const puntBlok = (a, i) => {
+    const p = (c.punten || []).find((x) => x.id === a.id) || { naam: a.id, nietOk: 0, pct: 0 };
+    const kd = kandidaten.find((x) => x.id === a.id);
+    const telling = kd && kd.oorzaken ? Object.entries(kd.oorzaken).sort((x, y) => y[1] - x[1]).map(([o, n]) => `${o} ${n}`).join(', ') : '';
+    const aanwezig = new Set(a.acties.map((x) => x.code).filter(Boolean));
+    const standaard = ((c.oorzakenPerPunt || {})[a.id] || []).filter((o) => o.actie && !aanwezig.has(o.code));
+    const eigenTop = (c.top || []).some((t) => t.id === a.id);
+    return h('div', { class: `ra-punt${a.opBlad ? '' : ' uit'}`, 'data-punt': a.id },
+      h('div', { class: 'ra-punt-kop' },
+        h('label', { class: 'ra-vink' },
+          h('input', { type: 'checkbox', checked: a.opBlad, disabled: !bewerk, 'data-test': `op-${a.id}`, onchange: (e) => { a.opBlad = e.target.checked; herteken(); } }),
+          h('strong', {}, p.naam)),
+        h('span', { class: 'zacht' }, `${p.nietOk}× niet OK · ${String(p.pct.toFixed(1)).replace('.', ',')}%`),
+        !eigenTop && bewerk ? h('button', { class: 'ra-klein', title: 'Aandachtspunt weghalen', onclick: () => { ih.aandachtspunten.splice(i, 1); herteken(); } }, 'Weg') : null),
+      telling ? h('div', { class: 'ra-oorzaken zacht' }, `Oorzaken: ${telling}`) : null,
+      h('ul', { class: 'ra-acties' },
+        a.acties.map((x, j) => h('li', {},
+          h('input', { type: 'checkbox', checked: x.opBlad, disabled: !bewerk, title: 'Op het blad', 'data-test': `actie-op-${a.id}-${j}`, onchange: (e) => { x.opBlad = e.target.checked; gewijzigd(); } }),
+          h('textarea', { rows: '2', maxlength: '160', disabled: !bewerk, 'data-invoer': `actie-${sleutel}-${a.id}-${j}`, placeholder: 'Actie in één zin',
+            oninput: (e) => { x.tekst = e.target.value.replace(/\s*\n\s*/g, ' '); if (x.bron === 'standaard') x.bron = 'eigen'; gewijzigd(); } }, x.tekst),
+          x.code ? h('span', { class: 'ra-code', title: x.bron === 'standaard' ? 'Standaardactie' : 'Aangepast' }, x.bron === 'standaard' ? 'standaard' : 'aangepast') : null,
+          bewerk ? h('button', { class: 'ra-klein', title: 'Actie weghalen', onclick: () => { a.acties.splice(j, 1); herteken(); } }, '×') : null))),
+      bewerk ? h('div', { class: 'ra-toevoegen' },
+        standaard.length ? h('select', { 'aria-label': 'Standaardactie toevoegen', onchange: (e) => {
+          const o = standaard.find((x) => x.code === e.target.value);
+          if (o) { a.acties.push({ tekst: o.actie, opBlad: true, bron: 'standaard', code: o.code }); herteken(); }
+        } }, h('option', { value: '' }, '+ standaardactie…'), standaard.map((o) => h('option', { value: o.code }, `${o.code}: ${o.actie}`))) : null,
+        h('button', { class: 'ra-klein', 'data-test': `eigen-${a.id}`, onclick: () => { a.acties.push({ tekst: '', opBlad: true, bron: 'eigen', code: '' }); herteken(); } }, '+ eigen actie')) : null,
+      h('input', { type: 'text', class: 'ra-notitie', value: a.notitie || '', maxlength: '200', disabled: !bewerk, 'data-invoer': `notitie-${sleutel}-${a.id}`, placeholder: 'Notitie (optioneel, komt klein op het blad)',
+        oninput: (e) => { a.notitie = e.target.value; gewijzigd(); } }));
+  };
+
+  const nogTeKiezen = kandidaten.filter((x) => !ih.aandachtspunten.some((a) => a.id === x.id));
+  const bevestigVraag = rapportBevestigVraag === sleutel;
+  const heropenVraag = rapportHeropenVraag === sleutel;
+  return h('section', { class: 'ra-paneel', 'aria-label': 'Aandachtspunten en acties' },
+    h('div', { class: 'ra-kop' },
+      h('h2', {}, 'Aandachtspunten en acties'),
+      h('button', { class: 'ra-klein', id: 'ra-oorzaken', onclick: () => ga('#/oorzaken') }, 'Standaardacties beheren')),
+    h('p', { class: 'ra-stand', id: 'ra-stand' }, rapportStandTekst(c, k)),
+    !kan ? h('p', { class: 'melding fout' }, 'Het script kent het bewerken van het rapport nog niet: zet script 2.9.0 online.') : null,
+    kan && !online && !bevestigd ? h('p', { class: 'zacht' }, 'Zonder verbinding kun je het rapport bekijken, niet wijzigen.') : null,
+    ih.aandachtspunten.map(puntBlok),
+    bewerk && nogTeKiezen.length ? h('select', { id: 'ra-punt-erbij', 'aria-label': 'Aandachtspunt toevoegen', onchange: (e) => {
+      const id = e.target.value;
+      if (!id) return;
+      ih.aandachtspunten.push({ id, opBlad: true, notitie: '', acties: voorgesteldeActies(c, id) });
+      herteken();
+    } }, h('option', { value: '' }, '+ aandachtspunt toevoegen…'), nogTeKiezen.map((x) => h('option', { value: x.id }, `${x.naam} (${x.nietOk}×)`))) : null,
+    h('label', { class: 'ra-label', for: 'ra-toelichting' }, 'Toelichting (één korte zin, onderaan het blad)'),
+    h('textarea', { id: 'ra-toelichting', rows: '2', maxlength: '240', disabled: !bewerk, 'data-invoer': `toelichting-${sleutel}`, oninput: (e) => { ih.toelichting = e.target.value; gewijzigd(); } }, ih.toelichting || ''),
+    h('p', { class: 'ra-waarschuwing', id: 'ra-waarschuwing', role: 'status' }, rapportWaarschuwing(ih)),
+    h('label', { class: 'ra-label', for: 'ra-naam' }, 'Naam (komt in de geschiedenis)'),
+    h('input', { type: 'text', id: 'ra-naam', value: rapportNaam, maxlength: '60', 'data-invoer': 'ra-naam', placeholder: 'Je naam',
+      oninput: (e) => { rapportNaam = e.target.value; db.zetInstelling('naam', rapportNaam).catch(() => {}); } }),
+    h('div', { class: 'ra-knoppen' },
+      !bevestigd ? h('button', { class: 'knop', id: 'ra-bewaar', 'data-kan': bewerk ? '1' : '0', disabled: !bewerk || !k.gewijzigd, onclick: () => rapportVerstuur(sleutel, 'rapportBewaar') }, rapportActie === 'rapportBewaar' ? 'Bewaren…' : 'Concept bewaren') : null,
+      !bevestigd ? h('button', { class: `knop hoofd${bevestigVraag ? ' gevaar' : ''}`, id: 'ra-bevestig', 'data-kan': bewerk ? '1' : '0', disabled: !bewerk,
+        onclick: () => {
+          if (!bevestigVraag) { rapportBevestigVraag = sleutel; toon({ behoudScroll: true }); setTimeout(() => { if (rapportBevestigVraag === sleutel) { rapportBevestigVraag = null; if (rapportHier(sleutel)) toon({ behoudScroll: true }); } }, 6000); return; }
+          rapportVerstuur(sleutel, 'rapportBevestig');
+        } }, rapportActie === 'rapportBevestig' ? 'Bevestigen…' : bevestigVraag ? 'Zeker? Cijfers worden vastgelegd. Tik nog eens' : 'Bevestigen') : null,
+      bevestigd && !heropenVraag ? h('button', { class: 'knop', id: 'ra-heropen', disabled: !online || !kan || !!rapportActie, onclick: () => { rapportHeropenVraag = sleutel; toon({ behoudScroll: true }); } }, 'Heropenen') : null),
+    bevestigd && heropenVraag ? h('div', { class: 'ra-heropen' },
+      h('label', { class: 'ra-label', for: 'ra-reden' }, 'Waarom heropenen? (verplicht, komt in de geschiedenis)'),
+      h('input', { type: 'text', id: 'ra-reden', maxlength: '200', 'data-invoer': 'ra-reden', value: rapportHeropenReden, oninput: (e) => { rapportHeropenReden = e.target.value; } }),
+      h('div', { class: 'ra-knoppen' },
+        h('button', { class: 'knop hoofd', id: 'ra-heropen-ok', disabled: !!rapportActie, onclick: () => {
+          if (!rapportHeropenReden.trim()) { rapportMelding = { sleutel, soort: 'fout', tekst: 'Geef een reden om te heropenen.' }; return toon({ behoudScroll: true }); }
+          const reden = rapportHeropenReden; rapportHeropenReden = '';
+          rapportVerstuur(sleutel, 'rapportHeropen', { reden });
+        } }, rapportActie === 'rapportHeropen' ? 'Heropenen…' : 'Heropenen'),
+        h('button', { class: 'knop', onclick: () => { rapportHeropenVraag = null; toon({ behoudScroll: true }); } }, 'Annuleren'))) : null,
+    reg.geschiedenis && reg.geschiedenis.length ? h('details', { class: 'ra-geschiedenis' },
+      h('summary', {}, `Geschiedenis (${reg.geschiedenis.length})`),
+      h('ul', {}, reg.geschiedenis.map((g) => h('li', {}, `Versie ${g.versie}: ${g.status} · ${g.om ? dagEnUur(Date.parse(g.om)) : ''}${g.door ? ` · ${g.door}` : ''}${g.reden ? ` · heropend: ${g.reden}` : ''}`)))) : null);
+}
+
 async function schermRapport(gevraagd) {
   const sleutel = isRapportSleutel(gevraagd) ? gevraagd : rapportStandaard();
   const jaar = /^\d{4}$/.test(sleutel);
@@ -1772,15 +1985,22 @@ async function schermRapport(gevraagd) {
   const jaren = [...new Set(maanden.map((m) => m.slice(0, 4)))];
   const bezig = rapportBezig.has(sleutel);
   const oud = !bewaard || Date.now() - bewaard.opgehaaldOm > RAPPORT_VERS_MS;
+  const klad = bewaard ? await rapportKladVan(sleutel, bewaard.cijfers) : null;
+  // Vanzelf vernieuwen, maar niet over niet-bewaarde wijzigingen heen tekenen (het klad blijft, de cijfers worden wel nieuw).
   if (navigator.onLine && !bezig && oud && !rapportGeprobeerd.has(sleutel)) {
     rapportGeprobeerd.add(sleutel);
     setTimeout(() => haalRapport(sleutel), 0);
   }
   const fout = rapportFout && rapportFout.sleutel === sleutel ? rapportFout.tekst : null;
+  const mld = rapportMelding && rapportMelding.sleutel === sleutel ? rapportMelding : null;
+  const c = bewaard ? bewaard.cijfers : null;
+  const reg = c && c.register;
+  const bevestigd = !!(reg && reg.status === 'bevestigd');
+  const kanAfdrukken = bevestigd && klad && !klad.gewijzigd;
   const keuze = (wat, tekst, id) => h('button', { class: `keuze${rapportIntern === wat ? ' gekozen' : ''}`, id, 'aria-pressed': String(rapportIntern === wat),
     onclick: () => { rapportIntern = wat; toon({ behoudScroll: true }); } }, tekst);
   const stand = bezig ? 'Cijfers ophalen… (dit duurt even: het script telt de hele sheet)'
-    : bewaard ? `Cijfers van ${dagEnUur(bewaard.opgehaaldOm)}${navigator.onLine ? '' : ' · geen verbinding'}`
+    : bewaard ? `${c.bevroren ? 'Vastgelegde cijfers' : 'Cijfers'} van ${dagEnUur(c.bevroren && c.bevestigdOm ? Date.parse(c.bevestigdOm) : bewaard.opgehaaldOm)}${navigator.onLine ? '' : ' · geen verbinding'}`
     : navigator.onLine ? 'Nog geen cijfers opgehaald.' : 'Nog geen cijfers op dit toestel en geen verbinding.';
   if (bewaard) naToon = () => schaalRapport();
   return h('div', { class: 'rapport-scherm' },
@@ -1799,16 +2019,94 @@ async function schermRapport(gevraagd) {
         keuze(true, 'Intern (met lijnen)', 'rapport-intern')),
       h('div', { class: 'ruimte' }),
       h('div', { class: 'groep' },
-        h('button', { class: 'knop', id: 'rapport-vernieuw', title: 'Cijfers opnieuw bij de sheet halen', disabled: bezig || !navigator.onLine, onclick: () => haalRapport(sleutel) }, bezig ? 'Bezig…' : 'Vernieuwen'),
-        h('button', { class: 'knop hoofd', id: 'rapport-druk', disabled: !bewaard, onclick: drukRapport }, 'Afdrukken'))),
+        h('button', { class: 'knop', id: 'rapport-vernieuw', title: 'Cijfers en stand opnieuw bij de sheet halen', disabled: bezig || !navigator.onLine, onclick: () => haalRapport(sleutel) }, bezig ? 'Bezig…' : 'Vernieuwen'),
+        h('button', { class: 'knop hoofd', id: 'rapport-druk', disabled: !kanAfdrukken, title: kanAfdrukken ? 'Afdrukken' : 'Eerst bevestigen', onclick: drukRapport }, 'Afdrukken'))),
     h('p', { class: 'rapport-stand', id: 'rapport-stand' }, stand),
     fout ? h('div', { class: 'melding fout', id: 'rapport-fout' }, `Ophalen mislukt: ${fout}${bewaard ? ' De vorige cijfers blijven getoond.' : ''}`) : null,
+    mld ? h('div', { class: `melding ${mld.soort}`, id: 'rapport-melding', role: 'status' }, mld.tekst,
+      mld.verouderd ? h('button', { class: 'knop', id: 'ra-laatste', onclick: () => rapportLaatsteVersie(sleutel) }, 'Laatste versie') : null) : null,
     rapportIntern ? h('p', { class: 'rapport-stand' }, 'Interne versie: met het raster per lijn. Niet bedoeld om aan de lijnen op te hangen.') : null,
-    bewaard ? (() => {
-      const houder = h('div', { class: 'blad-houder' }, h('div', { class: 'blad-schaal' }));
-      houder.firstChild.innerHTML = rapportHtml(bewaard.cijfers, { intern: rapportIntern, opgehaaldOm: new Date(bewaard.opgehaaldOm).toISOString() });
-      return houder;
-    })() : (bezig ? h('p', { class: 'laden' }, 'Laden…') : null));
+    bewaard ? h('div', { class: 'rapport-werk' },
+      rapportPaneel(sleutel, c, klad, { online: navigator.onLine, kan: !!reg }),
+      (() => {
+        const houder = h('div', { class: 'blad-houder' }, h('div', { class: 'blad-schaal' }));
+        houder.firstChild.innerHTML = rapportHtml(c, { intern: rapportIntern, opgehaaldOm: new Date(bewaard.opgehaaldOm).toISOString(), inhoud: klad && (klad.gewijzigd || !bevestigd) ? klad.inhoud : null });
+        return houder;
+      })()) : (bezig ? h('p', { class: 'laden' }, 'Laden…') : null));
+}
+
+/* ------------------------------------------------------------------ */
+/* Standaardacties (tabblad "Oorzaken")                                */
+/* ------------------------------------------------------------------ */
+
+async function haalOorzaken() {
+  oorzakenStaat = { ...oorzakenStaat, bezig: true, fout: null };
+  toon({ behoudScroll: true, achtergrond: true });
+  try {
+    const r = await roep('oorzaken', {}, { timeout: SNAPSHOT_WACHT_MS });
+    oorzakenStaat = { bezig: false, fout: null, punten: r.punten, basis: r.basis, lijst: r.oorzaken.map((o) => ({ ...o })), gewijzigd: false, melding: null };
+  } catch (e) {
+    oorzakenStaat = { ...oorzakenStaat, bezig: false, fout: e.code === 'ACTIE' ? 'Het script kent dit nog niet: zet script 2.9.0 online.' : e.message };
+  }
+  if (route()[0] === 'oorzaken') toon({ behoudScroll: true, achtergrond: true });
+}
+
+async function bewaarOorzaken() {
+  const st = oorzakenStaat;
+  st.bezig = true; st.melding = null;
+  toon({ behoudScroll: true });
+  try {
+    const r = await roep('oorzaken', { alle: st.lijst.filter((o) => o.code.trim()), basis: st.basis }, { timeout: SNAPSHOT_WACHT_MS });
+    oorzakenStaat = { bezig: false, fout: null, punten: r.punten, basis: r.basis, lijst: r.oorzaken.map((o) => ({ ...o })), gewijzigd: false, melding: { soort: 'ok', tekst: 'Standaardacties bewaard. Ze gelden voor rapporten die nog niet bevestigd zijn (na Vernieuwen).' } };
+    // Bewaarde rapporten tonen de oude standaardacties tot ze vernieuwd worden.
+    rapportGeprobeerd.clear();
+  } catch (e) {
+    st.bezig = false;
+    st.melding = { soort: 'fout', tekst: e.code === 'GEWIJZIGD' ? `${e.message}` : e.message, verouderd: e.code === 'GEWIJZIGD' };
+  }
+  if (route()[0] === 'oorzaken') toon({ behoudScroll: true });
+}
+
+async function schermOorzaken() {
+  const st = oorzakenStaat;
+  if (!st.lijst && !st.bezig && !st.fout && navigator.onLine) setTimeout(haalOorzaken, 0);
+  const kop = h('div', { class: 'ra-kop' }, h('h2', {}, 'Standaardacties'),
+    h('button', { class: 'knop', id: 'oz-vernieuw', disabled: st.bezig || !navigator.onLine, onclick: () => { if (st.gewijzigd && !confirmeerWeg()) return; haalOorzaken(); } }, 'Vernieuwen'));
+  const uitleg = h('p', { class: 'zacht' }, 'Per controlepunt de oorzaken met hun standaardactie (één zin) en sleutelwoorden. Het rapport stelt de actie voor bij de meest getelde oorzaak. De sleutelwoorden geven een opmerking een oorzaak zolang de app er nog geen vraagt.');
+  if (!st.lijst) {
+    return h('div', { class: 'oz-scherm' }, kop, uitleg,
+      st.fout ? h('div', { class: 'melding fout', id: 'oz-fout' }, st.fout) : null,
+      !navigator.onLine ? h('p', { class: 'melding fout' }, 'Geen verbinding: de standaardacties staan in de sheet en zijn alleen met verbinding te bekijken en te wijzigen.') : h('p', { class: 'laden' }, 'Laden…'));
+  }
+  const mark = () => { st.gewijzigd = true; const b = $scherm.querySelector('#oz-bewaar'); if (b) b.disabled = st.bezig || !navigator.onLine; };
+  const groepen = st.punten.map((punt) => {
+    const rijen = st.lijst.map((o, i) => ({ o, i })).filter(({ o }) => o.punt === punt);
+    return h('section', { class: 'oz-groep', 'data-punt': punt },
+      h('h3', {}, punt),
+      rijen.length ? h('table', { class: 'oz-tabel' },
+        h('thead', {}, h('tr', {}, h('th', {}, 'Oorzaak'), h('th', {}, 'Standaardactie'), h('th', {}, 'Sleutelwoorden'), h('th', {}, ''))),
+        h('tbody', {}, rijen.map(({ o, i }) => h('tr', {},
+          h('td', {}, h('input', { type: 'text', value: o.code, maxlength: '60', 'data-invoer': `oz-code-${i}`, oninput: (e) => { o.code = e.target.value; mark(); } })),
+          h('td', {}, h('input', { type: 'text', value: o.actie, maxlength: '160', 'data-invoer': `oz-actie-${i}`, placeholder: 'Wat doen we eraan? (één zin)', oninput: (e) => { o.actie = e.target.value; mark(); } })),
+          h('td', {}, h('input', { type: 'text', value: o.woorden, maxlength: '200', 'data-invoer': `oz-woorden-${i}`, placeholder: 'woord, woord', oninput: (e) => { o.woorden = e.target.value; mark(); } })),
+          h('td', {}, h('button', { class: 'ra-klein', title: 'Oorzaak weghalen', onclick: () => { st.lijst.splice(i, 1); st.gewijzigd = true; toon({ behoudScroll: true }); } }, '×')))))) : h('p', { class: 'zacht' }, 'Nog geen oorzaken.'),
+      h('button', { class: 'ra-klein', onclick: () => { const na = rijen.length ? rijen[rijen.length - 1].i + 1 : st.lijst.length; st.lijst.splice(na, 0, { punt, code: '', actie: '', woorden: '' }); st.gewijzigd = true; toon({ behoudScroll: true }); } }, '+ oorzaak'));
+  });
+  return h('div', { class: 'oz-scherm' }, kop, uitleg,
+    st.melding ? h('div', { class: `melding ${st.melding.soort}`, id: 'oz-melding' }, st.melding.tekst) : null,
+    st.fout ? h('div', { class: 'melding fout', id: 'oz-fout' }, st.fout) : null,
+    groepen,
+    h('div', { class: 'ra-knoppen oz-onder' },
+      h('button', { class: 'knop hoofd', id: 'oz-bewaar', disabled: !st.gewijzigd || st.bezig || !navigator.onLine, onclick: bewaarOorzaken }, st.bezig ? 'Bewaren…' : 'Bewaren')));
+}
+
+function confirmeerWeg() {
+  // Geen dialoogvenster: een tweede tik op Vernieuwen gooit de wijzigingen weg.
+  if (oorzakenStaat.wegVraag) { oorzakenStaat.wegVraag = false; return true; }
+  oorzakenStaat.wegVraag = true;
+  oorzakenStaat.melding = { soort: 'fout', tekst: 'Je hebt niet-bewaarde wijzigingen. Tik nog eens op Vernieuwen om ze weg te gooien.' };
+  toon({ behoudScroll: true });
+  return false;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2003,6 +2301,7 @@ async function start() {
   });
   db.opVersieWissel(() => location.reload());
   ingesteld = !!((await db.instelling('url')) && (await db.instelling('sleutel')));
+  rapportNaam = (await db.instelling('naam')) || '';
   snapshot = (await db.haal('referentie', 'snapshot')) || null;
 
   // Bij elke start opnieuw vragen zolang het niet toegekend is: Chrome zegt
@@ -2022,6 +2321,8 @@ async function start() {
     nieuw.zoek = ''; nieuw.gekozen = null; nieuw.alles = false; // het zoekveld van de rondgang begint telkens leeg
     bevestigWeg = null;
     if (route()[0] !== 'rapport') rapportGeprobeerd.clear(); // bij een volgend bezoek mag het rapport opnieuw vanzelf vernieuwen
+    rapportBevestigVraag = null; rapportHeropenVraag = null; rapportMelding = null;
+    if (route()[0] !== 'oorzaken' && oorzakenStaat.lijst && !oorzakenStaat.gewijzigd) oorzakenStaat = { bezig: false, fout: null, lijst: null };
     document.querySelectorAll('.kiezer').forEach((el) => el.remove()); // een keuzescherm hoort bij het scherm eronder
     // Een melding hoort bij het scherm waar ze getoond werd.
     if (melding) { if (melding.over > 0) melding.over -= 1; else melding = null; }

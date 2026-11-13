@@ -4,7 +4,7 @@ Webapp voor de dagelijkse kwaliteitsrondgang op een Android-tablet. Werkt zonder
 
 Gebouwd zijn fase 1 tot 3: de productiecontroles (Boven en Beneden, elk op één scherm), de twee foto's per controle, en de dagcontroles "Werkmaterialen boven" en "Magazijn en bufferzone". Fase 4, de overstap naar de echte sheet, is niet begonnen: alles hieronder gebeurt op de testkopie.
 
-Versies in deze map: script 2.6.0 (`apps-script/Code.gs`), app 1.11.0 (`docs/js/versie.js` en `docs/sw.js`).
+Versies in deze map: script 2.9.0 (`apps-script/Code.gs`, `Rapport.gs` en `Iconen.gs` samen), app 1.13.1 (`docs/js/versie.js` en `docs/sw.js`).
 
 Kolomletters in dit document zijn die van de testkopie op 5 oktober 2026, na het toevoegen van "THT ZK" (L) en "THT GRD" (AQ). Het script zoekt elke kolom op haar naam in rij 2, niet op haar letter: een kolom toevoegen of verplaatsen breekt niets, een kolom hernoemen wel.
 
@@ -13,20 +13,87 @@ Kolomletters in dit document zijn die van de testkopie op 5 oktober 2026, na het
 | Map | Inhoud |
 |---|---|
 | `docs/` | De app zelf. Dit is wat GitHub Pages serveert. |
-| `apps-script/Code.gs` | Het script dat aan de sheet hangt. |
+| `apps-script/Code.gs` | Het script dat aan de sheet hangt (snapshot, controles, foto's, dagcontroles, operatoren). |
+| `apps-script/Rapport.gs` | Het maandrapport (zelfde scriptproject; hoort naast `Code.gs` in de editor). |
+| `docs/js/rapport.js`, `docs/css/rapport.css`, `docs/fonts/` | Het maand- en jaarrapport als A4-blad in de app (één sjabloon voor scherm en afdruk; lettertype Inter, OFL-licentie). |
+| `apps-script/Iconen.gs` | De pictogrammen van het rapport als PNG in base64; gemaakt door `tools/maak-iconen.py`, niet met de hand bewerken. |
 | `test/` | Tests: het echte `Code.gs` tegen een nagebootste sheet, en de app in Chromium. |
 
 Er staan geen sleutels, geen spreadsheet-ID's en geen klant- of productnamen in de code. De ID's van de productielijst en de poco list leest het script uit de IMPORTRANGE-formules van de sheet. De testgegevens zijn verzonnen.
 
 De app staat op `https://lventureapps.github.io/qcrondgang/` (organisatie `lventureapps`, repository `qcrondgang`, Pages uit `/docs`). Palletscan blijft op `https://lventure.github.io/palletscan/`. Twee installeerbare apps op hetzelfde adres gaan op Android niet samen; daarom staan ze apart.
 
-## Script 2.6.0 en app 1.11.0 (operatoren beheren): wat je nu doet
+## App 1.13.0 en script 2.9.0 (rapport nalezen, acties, bevestigen): wat je nu doet
+
+Bovenop 1.12.0/2.8.0 (zie hieronder; heb je die nog niet online gezet, doe dan alleen deze stappen: ze bevatten alles).
+
+Nieuw:
+- **STOP**: staat er in de periode een STOP, dan komt onder de kop een rode balk met elke STOP (dag, controlepunt, opmerking; in de interne versie ook lijn en code).
+- **Paraaftabel** onderaan de versie voor productie: de initialen van alle operatoren uit de keuzelijst van de kolom "Operator" (behalve Interim, Flexi en Jobstudent), 11 per rij, links in het vakje, met plaats voor een paraaf.
+- **Aandachtspunten en acties** (paneel naast het blad): per aandachtspunt de standaardacties van de getelde oorzaken (de belangrijkste aangevinkt), tekst aanpassen voor deze maand, aan- of afvinken wat op het blad komt (hoogstens 3 aandachtspunten en 3 acties per punt), eigen actie, notitie, een ander controlepunt toevoegen, en een toelichting. Het blad volgt meteen.
+- **Concept bewaren → Bevestigen → (Heropenen)**: bevestigen legt de cijfers vast in het nieuwe tabblad **Rapporten**; latere correcties in de sheet veranderen een bevestigd rapport niet. **Afdrukken kan pas na bevestigen**; een niet-bevestigd blad draagt de stempel CONCEPT. Heropenen vraagt een reden en maakt een nieuwe versie; de vorige blijft bewaard (geschiedenis in het paneel). Wie wat deed: de naam die je één keer per toestel invult. Wie op een oudere versie bewaart (twee toestellen tegelijk), krijgt een melding en kan de laatste versie laden.
+- **Standaardacties beheren** (knop in het paneel): het tabblad "Oorzaken" in de app: per controlepunt oorzaak, standaardactie en sleutelwoorden aanpassen, toevoegen of weghalen.
+- Toekennen aan een persoon en de status van acties blijven in jullie algemene actielijst; op het blad staat "opvolging: zie actielijst".
+
+1. Script: vervang `Code.gs` en `Rapport.gs` (en `Iconen.gs` als je 2.7.0 nog niet had). Bewaar. Kies `installeer` en klik op Uitvoeren: het tabblad **Rapporten** komt erbij (niet met de hand wijzigen). Geen nieuwe toestemmingen (als 2.7.0 al geïnstalleerd was).
+2. Projectinstellingen > Scripteigenschappen: `APP_URL` = `https://lventureapps.github.io/qcrondgang/` (voor de link in de melding), en `RAPPORT_MAIL` = de adressen (Quality en Lowie).
+3. Implementeren > Implementaties beheren > bewerken > Nieuwe versie.
+4. GitHub (`docs`): `index.html`, `sw.js`, `css/rapport.css`, `js/app.js`, `js/rapport.js`, `js/versie.js` en de map `fonts` (drie `.woff2` en `OFL.txt`).
+5. Tablet en pc: **Bijwerken**. Open Maand- en jaarrapport, kies oktober 2026: het paneel toont "Voorstel, nog niet bewaard".
+6. Probeer op de testkopie: een actie aanpassen, Concept bewaren, naam invullen, Bevestigen (twee keer tikken), Afdrukken; daarna Heropenen met een reden. Kijk in het tabblad Rapporten: versie 1 bevestigd, versie 2 concept.
+7. Kies `installeerRapportTrigger` en Uitvoeren: op de 1e van elke maand om 6 uur mailt het script "concept klaar" met de cijfers en een link naar het rapport in de app (niets als het al bevestigd is). Het menu QC in de sheet doet hetzelfde op vraag.
+
+Niet meer gebruikt sinds 2.9.0: het tabblad "Rapportteksten" (mag weg) en de PDF van Google (`maandrapport` blijft alleen in de editor bestaan). Nog te bouwen: de automatische PDF bij bevestigen (GitHub Actions).
+
+## App 1.12.0 en script 2.8.0 (maand- en jaarrapport in de app): wat je nu doet
+
+Op vraag van Lowie (13 november 2026): het rapport moet de kwaliteit van de mockup hebben. De PDF die Google zelf maakt (script 2.7.0) haalt dat niet. Daarom staat het rapport nu als scherm in de app en drukt Chrome het af. Dit is stap 1 van hoofdstuk 8 van het voorstel; stap 2 (acties aanpassen, bevestigen, heropenen) en stap 3 (automatische PDF via GitHub Actions) volgen.
+
+Nieuw in de app: een vierde tegel **Maand- en jaarrapport** op het startscherm. Daar kies je een maand of een jaar, de versie voor productie of de interne versie (met het raster per lijn), en tik je op **Afdrukken**. De cijfers komen van de actie `rapport` van het script en blijven op het toestel bewaard: wat één keer opgehaald is, kun je ook zonder verbinding bekijken en afdrukken. Bij het openen haalt de app ze vanzelf opnieuw als ze ouder zijn dan een half uur; **Vernieuwen** doet het meteen.
+
+1. Script: vervang in de editor `Code.gs` en `Rapport.gs` door de nieuwe versies (`Iconen.gs` blijft gelijk). Bewaar. Er zijn geen nieuwe toestemmingen. Implementeren > Implementaties beheren > bewerken > Nieuwe versie. Het adres blijft hetzelfde.
+2. GitHub (repository `qcrondgang`, map `docs`): zet deze bestanden online: `index.html`, `sw.js`, `css/rapport.css` (nieuw), `js/app.js`, `js/rapport.js` (nieuw), `js/versie.js`, en de nieuwe map `fonts` met de drie `.woff2`-bestanden en `OFL.txt` (de licentie van het lettertype Inter; vrij te gebruiken).
+3. Tablet: open de app met verbinding en tik bovenaan op **Bijwerken**. Instellingen toont daarna "App op de tablet bewaard: ja (18 bestanden)".
+4. Op een pc: open `https://lventureapps.github.io/qcrondgang/` in **Chrome**, geef één keer het adres van het script en de sleutel in (zoals op de tablet), en kies **Maand- en jaarrapport**. Kies oktober 2026: het blad moet hetzelfde tonen als de mockup (200 controles, 2,2%, Documenten 9,5%, …), nu met Werkmaterialen en Magazijn ingevuld.
+5. **Afdrukken**: in het venster van Chrome papier A4, staand, marges "Standaard", schaal 100%. Kies "Opslaan als PDF" voor een bestand. Ontbreken de kleuren, vink dan bij "Meer instellingen" **Achtergrondafbeeldingen** aan. Het blad past altijd op één A4: is de inhoud te lang, dan verkleint de app ze zelf.
+6. **Zet de trigger van 2.7.0 (nog) niet aan**, en verwijder ze als je ze al gemaakt hebt (Triggers, het klokje links, `maandrapportAutomatisch`): op 1 december zou ze de PDF van Google mailen. In stap 2 wordt ze een melding "concept klaar".
+
+Wat er niet verandert: de productiecontroles en dagcontroles op de tablet, de wachtrij, en het menu QC in de sheet (dat nog de PDF van Google maakt; die route vervalt in stap 2).
+
+## Script 2.7.0 (maandrapport): wat je nu doet
+
+Op vraag van Lowie (9 en 10 november 2026): een automatisch maandrapport op één A4, voor de mensen in productie. Ontwerp en beslissingen staan in `bouwplan-qc-rondgang.md` (hoofdstuk 19) en in het project-document "Voorstel: automatisch visueel maandrapport". Het script bestaat nu uit drie bestanden die samen in hetzelfde scriptproject staan. De app wijzigt niet (1.11.0 blijft).
+
+Vaststelling vooraf: het tabblad "NIEUW maandoverzicht" telt sinds 28 augustus 2026 niets meer. De draaitabel in het verborgen tabblad "ok/NOK teller3" (cel A5) leest het QC-tabblad tot rij 1560; rij 1561 is 28-8-2026. Het nieuwe rapport leest alle rijen zelf en gebruikt die draaitabellen niet.
+
+1. Extensies > Apps Script. Vervang `Code.gs` door `apps-script/Code.gs`. Voeg twee bestanden toe (plusje naast "Bestanden" > Script): `Rapport` met de inhoud van `apps-script/Rapport.gs` en `Iconen` met de inhoud van `apps-script/Iconen.gs`. Bewaar. (De namen van de bestanden maken voor Google niet uit; alle bestanden van één project delen dezelfde functies.)
+2. Projectinstellingen (tandwiel) > Scripteigenschappen > eigenschap toevoegen: `RAPPORT_MAIL` = de adressen die het rapport krijgen, met een komma ertussen (Quality en Lowie). Zonder deze eigenschap wordt er niet gemaild; al de rest werkt.
+3. Kies `installeer` en klik op Uitvoeren. Google vraagt nieuwe toestemmingen (mail versturen, triggers). Geef ze. In het logboek:
+   - `Tabblad "Oorzaken" aangemaakt met de startlijst (50 oorzaken)`, `Tabblad "Rapportdata" aangemaakt`, `Tabblad "Rapportteksten" aangemaakt`. De tabbladen komen achteraan; je mag ze verplaatsen, niet hernoemen.
+   - `Maandrapport wordt gemaild naar: …` (anders: `RAPPORT_MAIL ontbreekt`).
+4. Kies `maandrapport` niet rechtstreeks (die vraagt de maand als argument); gebruik het menu: sluit de sheet, open ze opnieuw, en in de menubalk staat nu **QC > Maandrapport maken…**. Geef `2026-10`. Na enkele seconden: een melding met de cijfers, en in de map **"QC rapporten"** naast de sheet (naast "QC foto's") vier bestanden: `2026-10 Kwaliteit productie.pdf` (voor productie, zonder lijnen), `… - intern.pdf` (met het raster per lijn) en dezelfde twee als `.html`. Is `RAPPORT_MAIL` ingevuld, dan is het rapport ook gemaild, met de productieversie in de mail en beide PDF's als bijlage.
+5. Vergelijk met de cijfers die ik op de echte rijen van oktober berekend heb: 200 controles, 2.729 beoordeelde punten, 57 NOK, 2 STOP, 2,2%; Documenten 19 (9,5%), Hygiëne & vreemde voorwerpen 10 (5,0%), Zakje 8 (4,0%); per lijn L8 10, L2 7, L4 6, L7 6. Werkmaterialen boven en Magazijn en bufferzone heb ik niet op de echte rijen nagerekend (verwacht ongeveer 10 van 598 en 5 van 368).
+6. **Bekijk de PDF.** De PDF-omzetter van Google kent geen moderne CSS; daarom is het blad opgebouwd uit tabellen, inline-stijlen en PNG-pictogrammen. Dat is niet tegen Google zelf getest. Ziet de PDF er anders uit dan de HTML (open die in Chrome), stuur me dan de PDF; de HTML afdrukken vanuit Chrome (Ctrl+P, A4 staand) is intussen een werkende uitweg.
+7. Kies `installeerRapportTrigger` en klik op Uitvoeren: vanaf dan maakt het script op de 1e van elke maand om 6 uur het rapport van de vorige maand en mailt het. (Triggers > het klokje links toont hem; daar kun je hem ook verwijderen.)
+8. Implementeren > Implementaties beheren > bewerken > Nieuwe versie. Het adres blijft hetzelfde. Nodig voor de web-app-actie `rapport` (cijfers voor het toekomstige scherm "Deze maand" in de app); het rapport zelf werkt ook zonder.
+
+Hoe het verder werkt:
+
+- **Oorzaken** (configuratie, van QA): per controlepunt de oorzaakcodes, de standaardactie in één zin, en sleutelwoorden. Zolang de app geen oorzaak vraagt, geeft het script een niet-OK een code door de sleutelwoorden in de opmerking (kleine letters, eerste code die past, in de volgorde van het tabblad). Pas de zinnen en woorden aan in de sheet; het script leest ze bij elk rapport. Bestaat er een kolom "Oorzaak" in het QC-tabblad (app, fase 2), dan gaat die voor.
+- **Rapportdata** (van het script): per maand één rij per controlepunt, per lijn, per lijn × punt met niet-OK, en voor Werkmaterialen en Magazijn, met OK/NOK/STOP/NVT, beoordeeld, % en status. Het script vervangt bij elke aanmaak de rijen van die maand en laat andere maanden staan. Dit vervangt "NIEUW maandoverzicht".
+- **Rapportteksten** (van QA): per maand de drie aandachtspunten met de getelde oorzaak en de standaardactie, en een rij "Toelichting". Vul kolom F "Actie deze maand (QA)" in (of de toelichting op de rij Toelichting) en maak het rapport opnieuw via het menu: jouw zin vervangt dan de standaardactie op het blad. Het script laat kolom F altijd staan; een punt dat uit de top 3 valt, houdt zijn tekst maar krijgt geen Nr meer.
+- Drempels: per controlepunt groen ≤ 1,25%, oranje tot 3%, rood daarboven; totaal groen ≤ 0,5%, oranje tot 1%, rood daarboven (`RAPPORT.DREMPEL_PUNT` en `DREMPEL_TOTAAL` in `Rapport.gs`). Rekenregel: (NOK + STOP) / (OK + NOK + STOP); NVT en leeg tellen niet; een selectievakje is OK als het aangevinkt is. De 18 invoerkolommen zijn 16 punten: de drie checkweger-punten samen als "Checkweger", "Uitworp testplaatjes" als "Metaaldetector".
+- Historiek: vanaf september 2026 (`RAPPORT.START`); eerdere maanden worden niet berekend. De trend toont tot zes maanden.
+- Een opnieuw gemaakt rapport overschrijft de bestanden van die maand (de oude gaan naar de prullenbak van Drive) en mailt opnieuw. Wil je niet mailen bij een tussenstand: voer in de editor `maandrapport(2026, 11, { mail: false })` uit via een hulpfunctie, of haal `RAPPORT_MAIL` tijdelijk weg.
+- `QC > Rapport van de vorige maand` doet wat de trigger doet.
+
+## Script 2.6.0 en app 1.11.0 (operatoren beheren)
 
 Op vraag van Lowie (6 november 2026): een nieuwe operator (initialen) die de controleur bij Beneden intypt, blijft voortaan een keuze, en onder Instellingen > Operatoren kun je de lijst nakijken, aanvullen en inkorten. Beslist: de lijst is en blijft de keuzelijst van de kolommen "Operator" in de sheet (één bron, geldt op elke tablet en bij handmatige invoer); iedereen op de tablet mag ze beheren. Het script wijzigt de keuzelijst van beide kolommen "Operator", van rij 3 tot onderaan; bestaande rijen blijven onaangeroerd (een verwijderde naam in een oude rij krijgt enkel het rode hoekje van de validatie). `installeer` hoeft niet.
 
 1. Extensies > Apps Script, vervang `Code.gs`, bewaar. Implementeren > Implementaties beheren > bewerken > Nieuwe versie.
 2. Zet de inhoud van `docs/` in de repository en push. Op de tablet: Bijwerken, dan "Verversen" (de app ziet dan dat het script 2.6.0 is; tot dan is het scherm Operatoren alleen-lezen en werkt een getypte naam zoals vroeger).
-3. Kijk na de eerste toevoeging in de sheet naar de kolom "Operator": de keuzelijst wordt door het script opnieuw gezet. Google laat via een script de vormgeving van de keuzelijst niet instellen (de "chips" en eventuele kleuren per naam); het kan zijn dat de kolom er daarna anders uitziet (gewone uitklaplijst). De inhoud en de regel (weigeren of waarschuwen, hulptekst) blijven. Zie je dat verschil en stoort het, zeg het dan: dan is de uitweg een apart tabblad met de namen waar de keuzelijst naar verwijst.
+3. Kijk na de eerste toevoeging in de sheet naar de kolom "Operator": de keuzelijst wordt door het script opnieuw gezet. Google laat via een script de vormgeving van de keuzelijst niet instellen (de "chips" en eventuele kleuren per naam); het kan zijn dat de kolom er daarna anders uitziet (gewone uitklaplijst). De inhoud en de regel (weigeren of waarschuwen, hulptekst) blijven. Bevestigd op 6 november 2026: na de eerste wijziging via de app is het een gewone uitklaplijst; de chips komen pas terug met een apart tabblad met de namen waar de keuzelijst naar verwijst (niet gebouwd).
 
 Wat de controleur ziet: in het keuzescherm van de operatoren typt hij nieuwe initialen en tikt op Toevoegen; de naam is meteen gekozen én gaat via de wachtrij naar de sheet ("1 wijziging aan de operatoren wacht" in de balk zolang er geen verbinding is). Vanaf dan staat ze er als knop bij, ook na Verversen en op een andere tablet. Tikt hij op Klaar met nog een naam in het veld, dan telt die alleen voor deze controle (zoals vroeger): in de lijst komt alleen wat uitdrukkelijk toegevoegd is. Instellingen > Operatoren toont de lijst (met "nieuw" of "wordt verwijderd" bij wat nog wacht), een veld om toe te voegen en per naam Verwijderen met een tweede tik. Een wijziging die nog wacht, kun je daar terugnemen. Weigert het script een wijziging blijvend (bijvoorbeeld omdat de keuzelijst intussen uit een bereik komt), dan verdwijnt ze uit de wachtrij en zegt dat scherm waarom.
 
@@ -174,6 +241,8 @@ npm install
 npx playwright install chromium
 npm test
 ```
+
+`npm test` draait de tests van het script (`test/script.test.cjs`), van het maandrapport (`test/rapport.test.cjs`) en van de app in Chromium (`test/app.test.cjs`). De nagebootste omgeving laadt alle `.gs`-bestanden uit `apps-script/` in één context, zoals de editor van Google.
 
 `npm start` zet de app met de nagebootste sheet op `http://localhost:8787/qc-rondgang/` en toont het adres en de sleutel om in te geven.
 

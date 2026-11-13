@@ -3,9 +3,9 @@
   "private": true,
   "description": "QC Rondgang: offline webapp voor de dagelijkse kwaliteitsrondgang, met Apps Script backend.",
   "scripts": {
-    "test": "node test/script.test.cjs && node test/app.test.cjs",
+    "test": "node test/script.test.cjs && node test/rapport.test.cjs && node test/app.test.cjs",
     "test:sheets-api": "QC_SHEETS=1 node test/app.test.cjs",
-    "test:script": "node test/script.test.cjs",
+    "test:script": "node test/script.test.cjs && node test/rapport.test.cjs",
     "test:app": "node test/app.test.cjs",
     "start": "node test/server.cjs"
   },
